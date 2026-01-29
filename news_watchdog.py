@@ -75,7 +75,7 @@ def analyze_news_gemini(ticker, title, description):
         # 配置 API
         genai.configure(api_key=GEMINI_API_KEY)
         # 使用最新的 Flash 模型，速度更快
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         
         prompt = f"""
         You are Peter Lynch. Analyze this news for stock: {ticker}.
