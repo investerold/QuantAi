@@ -145,4 +145,40 @@ def start_watchdog():
             articles = get_latest_news(ticker)
             
             for article in articles:
-                url = article.get(
+                url = article.get('url')
+                
+                if url and url not in seen_urls:
+                    title = article.get('title')
+                    desc = article.get('description', '')
+                    
+                    # 使用 Gemini 分析
+                    analysis = analyze_news_gemini(ticker, title, desc)
+                    
+                    # 過濾掉 SKIP 的新聞
+                    if "SKIP" in analysis:
+                        print(f"🗑️ 過濾雜訊 ({ticker}): {title[:15]}...")
+                        seen_urls.add(url)
+                        continue
+                        
+                    # 發送警報
+                    msg = f"**{ticker} 快訊**\n{analysis}\n[閱讀全文]({url})"
+                    send_telegram_message(msg)
+                    print(f"✅ 已推送 {ticker} 重大新聞")
+                    
+                    seen_urls.add(url)
+            
+            # 重要：每支股票處理完後，休息 5 秒 (大幅降低 Rate Limit 風險)
+            print(f"⏳ 處理完 {ticker}，冷卻 5 秒...")
+            time.sleep(5) 
+            
+        save_history(seen_urls)
+        
+        if IS_GITHUB_ACTION:
+            print("✅ GitHub Action 任務完成，自動退出。")
+            break # 退出循環
+            
+        print(f"💤 休息 {SCAN_INTERVAL} 秒...")
+        time.sleep(SCAN_INTERVAL)
+
+if __name__ == "__main__":
+    start_watchdog()
