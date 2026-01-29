@@ -3,7 +3,8 @@ import json
 import requests
 import os
 import sys
-from datetime import datetime
+# 引入 timedelta 用於時間過濾
+from datetime import datetime, timedelta
 # 確保 bot.py 在同一目錄下，且有正確的 send_telegram_message 函數
 from bot import send_telegram_message
 
@@ -43,17 +44,30 @@ def get_latest_news(ticker):
         print(f"⚠️ 缺少 NEWS_API_KEY，跳過 {ticker}")
         return []
     
-    # 針對容易混淆的公司名稱進行優化
+    # 1. 處理容易撞名的公司 (強制全名匹配)
     query_term = ticker
     if ticker == "ODDITY":
-        query_term = "Oddity Tech"
+        query_term = '"Oddity Tech"'    # 強制精確匹配，避開 "Oddity" 通用詞
     elif ticker == "HIMS":
-        query_term = "Hims & Hers Health"
-    
+        query_term = '"Hims & Hers Health"'
+    elif ticker == "ZETA":
+        query_term = '"Zeta Global"'    # 避開 Zeta Jones 或電影角色
+    elif ticker == "OSCR":
+        query_term = '"Oscar Health"'   # 避開 Oscar 電影獎
+
+    # 2. 設定時間窗口 (只抓過去 4 小時的新聞)
+    # 這能解決 GitHub Actions 每次重啟都抓到舊新聞的問題
+    four_hours_ago = datetime.now() - timedelta(hours=4)
+    from_time = four_hours_ago.strftime('%Y-%m-%dT%H:%M:%S')
+
+    # 3. 極嚴格的財經關鍵字過濾
+    # 邏輯：(精確公司名) AND (股票代碼 OR 股價 OR 營收 OR 分析師)
+    q_query = f'{query_term} AND ("{ticker}" OR "stock price" OR "market" OR "earnings" OR "analyst" OR "revenue")'
+
     url = "https://newsapi.org/v2/everything"
     params = {
-        # 更精確的關鍵字組合，減少雜訊
-        'q': f'"{query_term}" AND ("stock" OR "shares" OR "revenue" OR "earnings")',
+        'q': q_query,
+        'from': from_time,       # 加上時間限制
         'sortBy': 'publishedAt',
         'language': 'en',
         'pageSize': 3,
@@ -86,8 +100,9 @@ def analyze_news_gemini(ticker, title, description):
         # 配置 API
         genai.configure(api_key=GEMINI_API_KEY)
         
-        # 改回最穩定的 gemini-pro (確保不會 404)
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        # 改回最穩定的 gemini-1.5-flash 或 gemini-pro (確保不會 404)
+        # 如果你確定有 2.5 權限，可改回 'gemini-2.5-flash'
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = f"""
         You are Peter Lynch. Analyze this news for stock: {ticker}.
@@ -146,7 +161,6 @@ def start_watchdog():
                         continue
                         
                     # 發送警報
-                    # 注意：這裡的 \n 已經修正為單斜線，Python 3.9 f-string 不需要雙斜線
                     msg = f"**{ticker} 快訊**\n{analysis}\n[閱讀全文]({url})"
                     send_telegram_message(msg)
                     print(f"✅ 已推送 {ticker} 重大新聞")
