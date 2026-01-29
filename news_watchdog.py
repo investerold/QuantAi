@@ -56,14 +56,14 @@ def get_latest_news(ticker):
         query_term = '"Oscar Health"'   # 避開 Oscar 電影獎
 
     # 2. 設定時間窗口 (放寬至 24 小時)
-    # 確保不會因為 4 小時太短而收不到任何新聞
-    four_hours_ago = datetime.now() - timedelta(hours=24)
-    from_time = four_hours_ago.strftime('%Y-%m-%dT%H:%M:%S')
+    # 這樣能確保即使在盤後或新聞淡季，也能抓到當天的新聞，避免「好像沒在跑」的錯覺
+    one_day_ago = datetime.now() - timedelta(hours=24)
+    from_time = one_day_ago.strftime('%Y-%m-%dT%H:%M:%S')
 
-    # 3. 平衡版關鍵字過濾 (Version 3.0)
-    # 邏輯：(公司名) AND (股票 OR 財經 OR 投資)
-    # 既能擋掉電影雜訊，又不會太嚴格漏掉新聞
-    q_query = f'{query_term} AND ("stock" OR "finance" OR "invest" OR "market")'
+    # 3. 平衡版關鍵字過濾 (Version 3.0 Logic)
+    # 邏輯：(公司名) AND (股票 OR 財經 OR 市場 OR 投資)
+    # 既能擋掉電影/娛樂雜訊，又不會因為太嚴格而漏掉重要的市場新聞
+    q_query = f'{query_term} AND ("stock" OR "finance" OR "market" OR "invest" OR "revenue" OR "earnings")'
 
     url = "https://newsapi.org/v2/everything"
     params = {
@@ -101,7 +101,7 @@ def analyze_news_gemini(ticker, title, description):
         # 配置 API
         genai.configure(api_key=GEMINI_API_KEY)
         
-        # 使用最穩定的模型 (gemini-1.5-flash)
+        # 使用最穩定的模型 (確保不會 404)
         model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = f"""
