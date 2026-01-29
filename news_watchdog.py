@@ -2,25 +2,36 @@ import time
 import json
 import requests
 import os
+import sys
 from datetime import datetime
+# 確保 bot.py 在同一目錄下，且有正確的 send_telegram_message 函數
 from bot import send_telegram_message
 
 # ================= 設定區 =================
 WATCHLIST = ['HIMS', 'ZETA', 'ODDITY', 'NVDA', 'TSLA', 'AMD', 'OSCR']
 
-# 你的 API Keys
-NEWS_API_KEY = 'fdd4f066081e4231a20e66319d581117'  # 保持不變
-GEMINI_API_KEY = 'AIzaSyC-vgL2fxsl45MdWxM5VTqjo3n2jjYM8IQY' # 填入 AIza 開頭的 Key
+# 嘗試讀取本地 .env 文件 (需要 pip install python-dotenv)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+# 從環境變數讀取 Keys (安全模式)
+NEWS_API_KEY = os.getenv('NEWS_API_KEY')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 SCAN_INTERVAL = 900 
-# ==========================================
-
 HISTORY_FILE = 'news_history.json'
+# ==========================================
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
         with open(HISTORY_FILE, 'r') as f:
-            return set(json.load(f))
+            try:
+                return set(json.load(f))
+            except json.JSONDecodeError:
+                return set()
     return set()
 
 def save_history(history_set):
@@ -29,9 +40,9 @@ def save_history(history_set):
 
 def get_latest_news(ticker):
     if not NEWS_API_KEY:
+        print(f"⚠️ 缺少 NEWS_API_KEY，跳過 {ticker}")
         return []
     
-    # 優化過的查詢語句
     url = "https://newsapi.org/v2/everything"
     params = {
         'q': f'("{ticker}" AND "stock") OR ("{ticker}" AND "earnings") OR ("{ticker}" AND "revenue")',
@@ -46,6 +57,7 @@ def get_latest_news(ticker):
         data = response.json()
         if response.status_code == 200:
             return data.get('articles', [])
+        print(f"❌ NewsAPI 錯誤: {data.get('message')}")
         return []
     except Exception as e:
         print(f"❌ 抓取 {ticker} 失敗: {e}")
@@ -54,6 +66,7 @@ def get_latest_news(ticker):
 def analyze_news_gemini(ticker, title, description):
     """ 使用 Google Gemini 免費版進行分析 """
     if not GEMINI_API_KEY:
+        print("⚠️ 未檢測到 GEMINI_API_KEY，跳過 AI 分析")
         return f"📰 {title}" 
 
     try:
@@ -61,6 +74,7 @@ def analyze_news_gemini(ticker, title, description):
         
         # 配置 API
         genai.configure(api_key=GEMINI_API_KEY)
+        # 使用最新的 Flash 模型，速度更快
         model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = f"""
@@ -80,13 +94,21 @@ def analyze_news_gemini(ticker, title, description):
         return f"📰 {title}" # 失敗時回退到標題
 
 def start_watchdog():
-    print(f"👀 24/7 新聞看門狗 (Gemini版) 已啟動... (每 {SCAN_INTERVAL/60} 分鐘掃描一次)")
-    send_telegram_message("👀 新聞監控系統已上線！(Powered by Gemini)")
+    # 判斷是否在 GitHub Actions 環境中運行
+    IS_GITHUB_ACTION = os.getenv('GITHUB_ACTIONS') == 'true'
+    
+    mode_msg = "☁️ 雲端單次掃描模式" if IS_GITHUB_ACTION else "💻 本地循環監控模式"
+    print(f"👀 Watchdog 啟動中... [{mode_msg}]")
+    
+    if not IS_GITHUB_ACTION:
+        send_telegram_message(f"👀 新聞監控上線 ({mode_msg})")
     
     seen_urls = load_history()
     
+    # 如果是 GitHub Action，只執行一次 loop 就退出 (防止超時)
+    # 如果是本地，保持無限循環
     while True:
-        print(f"[{datetime.now().strftime('%H:%M')}] 開始新一輪掃描...")
+        print(f"[{datetime.now().strftime('%H:%M')}] 開始掃描...")
         
         for ticker in WATCHLIST:
             articles = get_latest_news(ticker)
@@ -103,7 +125,7 @@ def start_watchdog():
                     
                     # 過濾掉 SKIP 的新聞
                     if "SKIP" in analysis:
-                        print(f"🗑️ 過濾雜訊: {title[:20]}...")
+                        print(f"🗑️ 過濾雜訊: {title[:15]}...")
                         seen_urls.add(url)
                         continue
                         
@@ -113,10 +135,15 @@ def start_watchdog():
                     print(f"✅ 已推送 {ticker} 重大新聞")
                     
                     seen_urls.add(url)
-                    
-            time.sleep(1)
+            
+            time.sleep(1) # 避免 API 请求過快
             
         save_history(seen_urls)
+        
+        if IS_GITHUB_ACTION:
+            print("✅ GitHub Action 任務完成，自動退出。")
+            break # 退出循環
+            
         print(f"💤 休息 {SCAN_INTERVAL} 秒...")
         time.sleep(SCAN_INTERVAL)
 
