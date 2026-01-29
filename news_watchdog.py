@@ -57,7 +57,7 @@ def get_latest_news(ticker):
 
     # 2. 設定時間窗口 (只抓過去 4 小時的新聞)
     # 這能解決 GitHub Actions 每次重啟都抓到舊新聞的問題
-    four_hours_ago = datetime.now() - timedelta(hours=4)
+    four_hours_ago = datetime.now() - timedelta(hours=24)
     from_time = four_hours_ago.strftime('%Y-%m-%dT%H:%M:%S')
 
     # 3. 極嚴格的財經關鍵字過濾
