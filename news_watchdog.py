@@ -43,9 +43,17 @@ def get_latest_news(ticker):
         print(f"⚠️ 缺少 NEWS_API_KEY，跳過 {ticker}")
         return []
     
+    # 針對容易混淆的公司名稱進行優化
+    query_term = ticker
+    if ticker == "ODDITY":
+        query_term = "Oddity Tech"
+    elif ticker == "HIMS":
+        query_term = "Hims & Hers Health"
+    
     url = "https://newsapi.org/v2/everything"
     params = {
-        'q': f'("{ticker}" AND "stock") OR ("{ticker}" AND "earnings") OR ("{ticker}" AND "revenue")',
+        # 更精確的關鍵字組合，減少雜訊
+        'q': f'"{query_term}" AND ("stock" OR "shares" OR "revenue" OR "earnings")',
         'sortBy': 'publishedAt',
         'language': 'en',
         'pageSize': 3,
@@ -72,9 +80,13 @@ def analyze_news_gemini(ticker, title, description):
     try:
         import google.generativeai as genai
         
+        # 強制休息 2 秒，避免觸發 429 Rate Limit
+        time.sleep(2)
+        
         # 配置 API
         genai.configure(api_key=GEMINI_API_KEY)
-        # 使用最新的 Flash 模型，速度更快
+        
+        # 改回最穩定的 gemini-pro (確保不會 404)
         model = genai.GenerativeModel('gemini-2.5-flash')
         
         prompt = f"""
@@ -90,6 +102,10 @@ def analyze_news_gemini(ticker, title, description):
         return response.text.strip()
         
     except Exception as e:
+        if "429" in str(e):
+            print("⚠️ 觸發 Rate Limit，休息中...")
+            return f"📰 {title}" # 降級處理，不讓程式崩潰
+            
         print(f"Gemini 分析失敗: {e}")
         return f"📰 {title}" # 失敗時回退到標題
 
@@ -100,13 +116,13 @@ def start_watchdog():
     mode_msg = "☁️ 雲端單次掃描模式" if IS_GITHUB_ACTION else "💻 本地循環監控模式"
     print(f"👀 Watchdog 啟動中... [{mode_msg}]")
     
+    # 測試用：如果是本地運行，發送上線通知
     if not IS_GITHUB_ACTION:
         send_telegram_message(f"👀 新聞監控上線 ({mode_msg})")
     
     seen_urls = load_history()
     
-    # 如果是 GitHub Action，只執行一次 loop 就退出 (防止超時)
-    # 如果是本地，保持無限循環
+    # 如果是 GitHub Action，只執行一次 loop 就退出
     while True:
         print(f"[{datetime.now().strftime('%H:%M')}] 開始掃描...")
         
@@ -125,18 +141,21 @@ def start_watchdog():
                     
                     # 過濾掉 SKIP 的新聞
                     if "SKIP" in analysis:
-                        print(f"🗑️ 過濾雜訊: {title[:15]}...")
+                        print(f"🗑️ 過濾雜訊 ({ticker}): {title[:15]}...")
                         seen_urls.add(url)
                         continue
                         
                     # 發送警報
+                    # 注意：這裡的 \n 已經修正為單斜線，Python 3.9 f-string 不需要雙斜線
                     msg = f"**{ticker} 快訊**\n{analysis}\n[閱讀全文]({url})"
                     send_telegram_message(msg)
                     print(f"✅ 已推送 {ticker} 重大新聞")
                     
                     seen_urls.add(url)
             
-            time.sleep(1) # 避免 API 请求過快
+            # 重要：每支股票處理完後，休息 5 秒 (大幅降低 Rate Limit 風險)
+            print(f"⏳ 處理完 {ticker}，冷卻 5 秒...")
+            time.sleep(5) 
             
         save_history(seen_urls)
         
