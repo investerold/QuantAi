@@ -55,14 +55,15 @@ def get_latest_news(ticker):
     elif ticker == "OSCR":
         query_term = '"Oscar Health"'   # 避開 Oscar 電影獎
 
-    # 2. 設定時間窗口 (只抓過去 4 小時的新聞)
-    # 這能解決 GitHub Actions 每次重啟都抓到舊新聞的問題
+    # 2. 設定時間窗口 (放寬至 24 小時)
+    # 確保不會因為 4 小時太短而收不到任何新聞
     four_hours_ago = datetime.now() - timedelta(hours=24)
     from_time = four_hours_ago.strftime('%Y-%m-%dT%H:%M:%S')
 
-    # 3. 極嚴格的財經關鍵字過濾
-    # 邏輯：(精確公司名) AND (股票代碼 OR 股價 OR 營收 OR 分析師)
-    q_query = f'{query_term} AND ("{ticker}" OR "stock price" OR "market" OR "earnings" OR "analyst" OR "revenue")'
+    # 3. 平衡版關鍵字過濾 (Version 3.0)
+    # 邏輯：(公司名) AND (股票 OR 財經 OR 投資)
+    # 既能擋掉電影雜訊，又不會太嚴格漏掉新聞
+    q_query = f'{query_term} AND ("stock" OR "finance" OR "invest" OR "market")'
 
     url = "https://newsapi.org/v2/everything"
     params = {
@@ -100,8 +101,7 @@ def analyze_news_gemini(ticker, title, description):
         # 配置 API
         genai.configure(api_key=GEMINI_API_KEY)
         
-        # 改回最穩定的 gemini-1.5-flash 或 gemini-pro (確保不會 404)
-        # 如果你確定有 2.5 權限，可改回 'gemini-2.5-flash'
+        # 使用最穩定的模型 (gemini-1.5-flash)
         model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = f"""
@@ -145,40 +145,4 @@ def start_watchdog():
             articles = get_latest_news(ticker)
             
             for article in articles:
-                url = article.get('url')
-                
-                if url and url not in seen_urls:
-                    title = article.get('title')
-                    desc = article.get('description', '')
-                    
-                    # 使用 Gemini 分析
-                    analysis = analyze_news_gemini(ticker, title, desc)
-                    
-                    # 過濾掉 SKIP 的新聞
-                    if "SKIP" in analysis:
-                        print(f"🗑️ 過濾雜訊 ({ticker}): {title[:15]}...")
-                        seen_urls.add(url)
-                        continue
-                        
-                    # 發送警報
-                    msg = f"**{ticker} 快訊**\n{analysis}\n[閱讀全文]({url})"
-                    send_telegram_message(msg)
-                    print(f"✅ 已推送 {ticker} 重大新聞")
-                    
-                    seen_urls.add(url)
-            
-            # 重要：每支股票處理完後，休息 5 秒 (大幅降低 Rate Limit 風險)
-            print(f"⏳ 處理完 {ticker}，冷卻 5 秒...")
-            time.sleep(5) 
-            
-        save_history(seen_urls)
-        
-        if IS_GITHUB_ACTION:
-            print("✅ GitHub Action 任務完成，自動退出。")
-            break # 退出循環
-            
-        print(f"💤 休息 {SCAN_INTERVAL} 秒...")
-        time.sleep(SCAN_INTERVAL)
-
-if __name__ == "__main__":
-    start_watchdog()
+                url = article.get(
