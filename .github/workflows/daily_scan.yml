@@ -2,8 +2,8 @@ name: 24/7 News Watchdog
 
 on:
   schedule:
-    - cron: '*/15 * * * *'  # 每 15 分鐘運行一次
-  workflow_dispatch:        # 允許手動測試按鈕
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
 
 jobs:
   run-scanner:
@@ -24,6 +24,7 @@ jobs:
 
     - name: Run News Watchdog
       env:
+        # 請確保這裡的變數名稱與 Settings -> Secrets 裡的一模一樣
         NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
