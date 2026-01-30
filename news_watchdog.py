@@ -9,6 +9,10 @@ from datetime import datetime
 # ================= CONFIGURATION =================
 WATCHLIST = ['HIMS', 'ZETA', 'ODD', 'NVDA', 'TSLA', 'AMD', 'OSCR']
 
+# 建議先用 1.5-flash 確保跑通，如果你確定你有 2.0 或更高權限，再改這裡
+# 常見有效值: 'gemini-1.5-flash', 'gemini-2.0-flash-exp'
+MODEL_NAME = 'gemini-1.5-flash' 
+
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
@@ -17,10 +21,14 @@ HISTORY_FILE = 'news_history.json'
 # ================= FUNCTIONS =================
 
 def load_history():
+    # 這裡暫時維持"空集合"，讓你每次測試都有結果
+    # 正式上線時把下面這行改成 return set() 即可
     if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, 'r') as f:
-            try: return set(json.load(f))
-            except: return set()
+        try:
+            with open(HISTORY_FILE, 'r') as f:
+                return set(json.load(f))
+        except:
+            return set()
     return set()
 
 def save_history(history_set):
@@ -30,6 +38,7 @@ def save_history(history_set):
 
 def send_telegram_message(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ Telegram Token or Chat ID missing!")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
@@ -39,90 +48,80 @@ def send_telegram_message(message):
         "disable_web_page_preview": True
     }
     try:
-        requests.post(url, json=payload)
+        resp = requests.post(url, json=payload)
+        if resp.status_code != 200:
+            print(f"Telegram Send Failed: {resp.text}")
     except Exception as e:
-        print(f"Telegram Error: {e}")
+        print(f"Telegram Connection Error: {e}")
 
 def get_yfinance_news(ticker):
     try:
         stock = yf.Ticker(ticker)
-        return stock.news or []
+        # yfinance 的 news 有時會返回 None
+        return stock.news if stock.news else []
     except Exception as e:
         print(f"Error fetching {ticker}: {e}")
         return []
 
 def analyze_with_gemini(ticker, title, link):
     if not GEMINI_API_KEY:
-        return f"📰 News: {title}"
+        return f"📰 News: {title} (No AI Key)"
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        model = genai.GenerativeModel(MODEL_NAME)
         
-        # 測試用：移除 "SKIP" 邏輯，強制它說話
         prompt = f"""
-        Analyze ${ticker} news for a stock investor.
+        You are a stock market analyst.
+        Ticker: ${ticker}
         Headline: "{title}"
-        Task: Summarize in 1 short sentence and provide sentiment.
+        Link: {link}
+        
+        Task: Provide a very brief summary (1 sentence) and a sentiment label (Bullish/Bearish/Neutral).
+        Format: [Sentiment] Summary
         """
-        response = model.generate_content(prompt, generation_config={"temperature": 0.1})
+        response = model.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
-        print(f"Gemini Error: {e}")
-        return f"⚠️ AI Error: {title}"
+        print(f"Gemini Error ({MODEL_NAME}): {e}")
+        return "SKIP" # 如果 AI 壞了，回傳 SKIP 以便跳過或做錯誤處理
 
 def main():
-    print(f"[{datetime.now()}] Starting Watchdog v5.3 (RESET MODE)...")
+    print(f"[{datetime.now()}] Starting Watchdog (DEBUG MODE)...")
     
-    # ❌ 舊的讀取邏輯 (暫時註釋掉)
-    # history = load_history()
-    
-    # ✅ 新的重置邏輯：強制為空
+    # !!! 測試模式：強制重置歷史，確保每次都分析 !!!
     history = set() 
-    print("!!! FORCE HISTORY RESET: IGNORING PAST RECORDS !!!")
+    print("!!! FORCE HISTORY RESET ACTIVE !!!")
     
     new_alerts = 0
     
     for ticker in WATCHLIST:
+        print(f"--------------------------------------------------")
         print(f"Checking {ticker}...", end=" ")
         news_items = get_yfinance_news(ticker)
         print(f"Found {len(news_items)} items.")
         
+        if not news_items:
+            continue
+
+        # ================== DEBUG 關鍵點 ==================
+        # 這裡會印出第一條新聞的所有 Key，如果跑失敗，看 Log 這裡最重要
+        first_item = news_items[0]
+        print(f"🔍 [DEBUG] First Item Keys: {list(first_item.keys())}")
+        # =================================================
+
         for item in news_items:
-            url = item.get('link')
+            # 嘗試抓取 Title
             title = item.get('title')
             
-            # 安全檢查
-            if not url or not title: continue
+            # 嘗試抓取 URL，yfinance 不同版本 key 不一樣
+            url = item.get('link') or item.get('url') or item.get('longURL')
             
-            # 因為 history 已經被清空，這裡的 if url in history 將永遠為 False
-            # 所以每一條新聞都會進入 Analyzing...
-            
-            safe_title = str(title)[:30]
-            print(f"   -> Analyzing: {safe_title}...")
-            
-            analysis = analyze_with_gemini(ticker, title, url)
-            
-            # 打印 Gemini 的回應，讓我們看看它到底說了什麼
-            print(f"      [Gemini]: {analysis}") 
-            
-            if analysis != "SKIP":
-                msg = f"**#{ticker}**\n{analysis}\n[Read Source]({url})"
-                send_telegram_message(msg)
-                new_alerts += 1
-                print("      ✅ SENT ALERT")
-                time.sleep(2)
-            else:
-                print("      ❌ SKIPPED BY AI")
-            
-            # 雖然重置了讀取，但我們還是要把發過的加回去，為了下一次運行
-            history.add(url)
-        
-        time.sleep(1)
+            # 如果還是空的，且有 clickThroughUrl (有時 Yahoo 結構會變)
+            if not url and 'clickThroughUrl' in item:
+                url = item['clickThroughUrl'].get('url')
 
-    # 運行完這次後，記得把 main 改回來，或者保留這行註釋以免無限循環
-    # save_history(history) 
-    print(f"Done. Sent {new_alerts} alerts.")
-
-
-if __name__ == "__main__":
-    main()
+            # Debug: 如果缺少關鍵資料，印出來為什麼
+            if not title or not url:
+                print(f"      ❌ SKIPPING ITEM: Missing Data. Title: {bool(title)}, URL: {bool(url)}")
+                # 這裡可以把 item 印出來看看結構
+                # p
