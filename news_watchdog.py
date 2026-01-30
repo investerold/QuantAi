@@ -56,18 +56,18 @@ def analyze_with_gemini(ticker, title, link):
         return f"📰 News: {title}"
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        
+        # 測試用：移除 "SKIP" 邏輯，強制它說話
         prompt = f"""
-        Role: Peter Lynch (GARP Investor). Analyze ${ticker} news.
+        Analyze ${ticker} news for a stock investor.
         Headline: "{title}"
-        Task: 
-        1. If it's market noise/clickbait -> Reply "SKIP".
-        2. If it's Material (Earnings, M&A, FDA, Contract) -> Summarize in 1 sentence with Sentiment.
+        Task: Summarize in 1 short sentence and provide sentiment.
         """
         response = model.generate_content(prompt, generation_config={"temperature": 0.1})
-        result = response.text.strip()
-        return result if "SKIP" not in result else "SKIP"
+        return response.text.strip()
     except Exception as e:
+        print(f"Gemini Error: {e}")
         return f"⚠️ AI Error: {title}"
 
 def main():
