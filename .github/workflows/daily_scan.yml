@@ -1,9 +1,10 @@
-name: Market Watchdog (Google RSS + YFinance)
+name: Market Watchdog (Batch Optimized)
 
 on:
   schedule:
-    # 每 30 分鐘運行一次
-    - cron: '*/30 * * * *'
+    # ✅ 改為每 2 小時運行一次 (例如 00:00, 02:00...)
+    # 這樣可以大幅減少 API 消耗，且對於長線/Swing交易足夠即時
+    - cron: '0 */2 * * *'
   workflow_dispatch: # 手動觸發按鈕
 
 permissions:
@@ -20,10 +21,9 @@ jobs:
     - name: Setup Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.11' # 保持使用 3.11
+        python-version: '3.11'
         
     - name: Install Dependencies
-      # ✅ 修改：移除了 google-generativeai，只保留必要的 requests 和 yfinance
       run: pip install requests yfinance
 
     - name: Run Watchdog Script
@@ -34,18 +34,16 @@ jobs:
       run: python news_watchdog.py
       
     - name: Commit and Push History
-      # 這一步會檢查 news_history.json 是否有變動
-      # 注意：目前的 Python 代碼是 FORCE RESET 模式，可能暫時不會寫入檔案
-      # 等你測試成功後，記得去 Python 代碼把 save_history 的註釋解開
       run: |
         git config --global user.name "MarketBot"
         git config --global user.email "bot@github.com"
         
-        # 確保文件存在，避免第一次報錯
+        # 確保文件存在
         touch news_history.json
         
         git add news_history.json
         
+        # 只有在有變動時才 Commit，避免空 Commit 報錯
         if git diff --staged --quiet; then
           echo "No changes to history. Skipping push."
         else
