@@ -4,7 +4,7 @@ import requests
 import os
 import yfinance as yf
 import xml.etree.ElementTree as ET
-import re # 用來清理 HTML 標籤
+import re
 from datetime import datetime
 
 # ================= CONFIGURATION =================
@@ -14,8 +14,8 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 HISTORY_FILE = 'news_history.json'
 
-# ✅ 改回 1.5-flash，速度快且額度高 (15 RPM)，不用擔心額度用完
-GEMINI_MODEL = "gemini-1.5-flash"
+# ✅ 聽師兄話，用返最新 2.5！
+GEMINI_MODEL = "gemini-2.5-flash"
 
 # ================= FUNCTIONS =================
 
@@ -34,7 +34,7 @@ def save_history(history_set):
         json.dump(clean_history, f, indent=2)
 
 def clean_html(raw_html):
-    """清除 RSS description 中的 HTML 標籤"""
+    """清除 HTML 標籤，讓 AI 讀得更乾淨"""
     if not raw_html: return ""
     cleanr = re.compile('<.*?>')
     text = re.sub(cleanr, '', raw_html)
@@ -71,14 +71,13 @@ def get_google_rss_news(ticker):
         for item in root.findall('.//item')[:3]: 
             title = item.find('title').text
             link = item.find('link').text
-            # ✅ 新增：嘗試抓取 description (摘要)
             description = item.find('description').text if item.find('description') is not None else ""
             
             if title and link:
                 items.append({
                     'title': title, 
                     'link': link, 
-                    'snippet': clean_html(description), # 清理 HTML
+                    'snippet': clean_html(description),
                     'source': 'GoogleRSS'
                 })
         return items
@@ -87,7 +86,6 @@ def get_google_rss_news(ticker):
         return []
 
 def get_yfinance_news(ticker):
-    """YFinance (備用)"""
     print(f"   ⚠️ RSS Empty, trying yfinance for {ticker}...")
     try:
         stock = yf.Ticker(ticker)
@@ -97,7 +95,7 @@ def get_yfinance_news(ticker):
             formatted_news.append({
                 'title': item.get('title'),
                 'link': item.get('link') or item.get('url'),
-                'snippet': "", # YFinance 通常不給 snippet
+                'snippet': "", 
                 'source': 'Yahoo'
             })
         return formatted_news
@@ -114,7 +112,7 @@ def call_gemini_rest_api(ticker, title, link, snippet):
     
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
     
-    # ✅ 優化提示詞：要求條列式重點
+    # ✅ Prompt: 要求 2-3 個重點 (Bullet Points)
     prompt = f"""
     Role: Senior Stock Analyst.
     Ticker: {ticker}
@@ -124,7 +122,7 @@ def call_gemini_rest_api(ticker, title, link, snippet):
     
     Task: 
     1. Determine sentiment (Bullish 🟢 / Bearish 🔴 / Neutral ⚪).
-    2. Provide 2-3 short bullet points summarizing the KEY facts/reasons from the snippet.
+    2. Provide 2-3 short bullet points summarizing the KEY facts.
     
     Output Format:
     [Sentiment Icon] Sentiment
@@ -134,24 +132,36 @@ def call_gemini_rest_api(ticker, title, link, snippet):
     
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     
+    # 重試機制
     for attempt in range(3):
         try:
             response = requests.post(api_url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15)
+            
             if response.status_code == 200:
                 try:
                     return response.json()['candidates'][0]['content']['parts'][0]['text'].strip()
-                except: return "SKIP"
+                except KeyError:
+                    print(f"      ⚠️ JSON Parse Error: {response.text}")
+                    return "SKIP"
+            
             elif response.status_code == 429:
-                time.sleep(30) # 遇到限制休息久一點
+                print(f"      ⚠️ Quota Limit (429). Sleeping 65s...")
+                time.sleep(65) # 2.5 Flash 爆額度要休息久啲
                 continue
+                
             else:
+                # 這次不再隱藏錯誤，直接印出來
+                print(f"      ❌ API Error {response.status_code}: {response.text}")
                 return "SKIP"
-        except:
+                
+        except Exception as e:
+            print(f"      ❌ Connection Error: {e}")
             return "SKIP"
+            
     return "SKIP"
 
 def main():
-    print(f"[{datetime.now()}] Starting Watchdog v7.0 (Details & Efficiency)...")
+    print(f"[{datetime.now()}] Starting Watchdog v8.0 (Gemini 2.5 + Bullet Points)...")
     
     history = load_history()
     print(f"Loaded {len(history)} history items.")
@@ -179,22 +189,22 @@ def main():
             
             print(f"   -> Analyzing: {str(title)[:30]}...")
             
-            # 呼叫 AI，傳入 snippet
+            # 呼叫 AI
             analysis = call_gemini_rest_api(ticker, title, url, snippet)
             
             if analysis and analysis != "SKIP":
                 print(f"      [AI]: Sent Alert")
                 
                 source_label = item.get('source', 'Web')
-                # 組合訊息
                 msg = f"**#{ticker} ({source_label})**\n{analysis}\n\n[Read Source]({url})"
                 
                 send_telegram_message(msg)
                 new_alerts += 1
                 history.add(clean_url)
                 
-                # ✅ 1.5-flash 額度較高，休息 5 秒即可
-                time.sleep(5)
+                # ✅ 關鍵：Gemini 2.5 必須休息 15 秒，否則必爆
+                print("      💤 Cooling down 15s for 2.5-flash quota...")
+                time.sleep(15)
             else:
                 print("      ❌ AI Failed")
 
