@@ -4,6 +4,7 @@ import requests
 import os
 import yfinance as yf
 import xml.etree.ElementTree as ET
+import re # 用來清理 HTML 標籤
 from datetime import datetime
 
 # ================= CONFIGURATION =================
@@ -13,13 +14,12 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 HISTORY_FILE = 'news_history.json'
 
-# 你指定的模型 (注意：2.5 限制每分鐘只能 5 次請求)
-GEMINI_MODEL = "gemini-2.5-flash"
+# ✅ 改回 1.5-flash，速度快且額度高 (15 RPM)，不用擔心額度用完
+GEMINI_MODEL = "gemini-1.5-flash"
 
 # ================= FUNCTIONS =================
 
 def load_history():
-    """讀取已經發送過的新聞，避免重複浪費 AI 額度"""
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, 'r') as f:
@@ -29,14 +29,19 @@ def load_history():
     return set()
 
 def save_history(history_set):
-    """保存歷史紀錄"""
-    clean_history = list(history_set)[-300:] # 只保留最近300條
+    clean_history = list(history_set)[-300:] 
     with open(HISTORY_FILE, 'w') as f:
         json.dump(clean_history, f, indent=2)
 
+def clean_html(raw_html):
+    """清除 RSS description 中的 HTML 標籤"""
+    if not raw_html: return ""
+    cleanr = re.compile('<.*?>')
+    text = re.sub(cleanr, '', raw_html)
+    return text.replace('&nbsp;', ' ').strip()
+
 def send_telegram_message(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ Telegram Config Missing!")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
@@ -51,24 +56,31 @@ def send_telegram_message(message):
         print(f"Telegram Error: {e}")
 
 def get_google_rss_news(ticker):
-    """Google RSS (優先使用)"""
+    """Google RSS (含摘要提取)"""
     print(f"   📡 Fetching Google RSS for {ticker}...")
     try:
         url = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=10)
         
-        if resp.status_code != 200:
-            return []
+        if resp.status_code != 200: return []
             
         root = ET.fromstring(resp.content)
         items = []
-        # 限制只抓前 3 條，避免一次消耗太多 AI 額度
+        # 限制前 3 條
         for item in root.findall('.//item')[:3]: 
             title = item.find('title').text
             link = item.find('link').text
+            # ✅ 新增：嘗試抓取 description (摘要)
+            description = item.find('description').text if item.find('description') is not None else ""
+            
             if title and link:
-                items.append({'title': title, 'link': link, 'source': 'GoogleRSS'})
+                items.append({
+                    'title': title, 
+                    'link': link, 
+                    'snippet': clean_html(description), # 清理 HTML
+                    'source': 'GoogleRSS'
+                })
         return items
     except Exception as e:
         print(f"   ❌ RSS Failed: {e}")
@@ -81,10 +93,11 @@ def get_yfinance_news(ticker):
         stock = yf.Ticker(ticker)
         news = stock.news
         formatted_news = []
-        for item in news[:3]: # 同樣限制前3條
+        for item in news[:3]: 
             formatted_news.append({
                 'title': item.get('title'),
                 'link': item.get('link') or item.get('url'),
+                'snippet': "", # YFinance 通常不給 snippet
                 'source': 'Yahoo'
             })
         return formatted_news
@@ -96,64 +109,52 @@ def get_stock_news(ticker):
     if news: return news
     return get_yfinance_news(ticker)
 
-def call_gemini_rest_api(ticker, title, link):
-    """
-    呼叫 Gemini API，包含自動重試機制 (Auto-Retry)
-    """
-    if not GEMINI_API_KEY:
-        return f"📰 News: {title} (No AI Key)"
+def call_gemini_rest_api(ticker, title, link, snippet):
+    if not GEMINI_API_KEY: return "No Key"
     
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
     
+    # ✅ 優化提示詞：要求條列式重點
     prompt = f"""
-    Role: Stock Analyst.
+    Role: Senior Stock Analyst.
     Ticker: {ticker}
-    Headline: "{title}"
+    News Title: "{title}"
+    Snippet: "{snippet}"
     Link: {link}
-    Task: Summarize in 1 sentence & provide sentiment (Bullish/Bearish/Neutral).
-    Format: [Sentiment] Summary...
+    
+    Task: 
+    1. Determine sentiment (Bullish 🟢 / Bearish 🔴 / Neutral ⚪).
+    2. Provide 2-3 short bullet points summarizing the KEY facts/reasons from the snippet.
+    
+    Output Format:
+    [Sentiment Icon] Sentiment
+    • Point 1
+    • Point 2
     """
     
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     
-    # 最多重試 3 次
-    max_retries = 3
-    for attempt in range(max_retries):
+    for attempt in range(3):
         try:
             response = requests.post(api_url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15)
-            
-            # 情況 A: 成功
             if response.status_code == 200:
-                data = response.json()
                 try:
-                    return data['candidates'][0]['content']['parts'][0]['text'].strip()
-                except KeyError:
-                    return "SKIP"
-            
-            # 情況 B: 遇到 429 (Rate Limit) -> 休息久一點再試
+                    return response.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+                except: return "SKIP"
             elif response.status_code == 429:
-                wait_time = 65 # 休息 65 秒確保額度重置
-                print(f"      ⚠️ Quota Exceeded (429). Sleeping {wait_time}s before retry {attempt+1}/{max_retries}...")
-                time.sleep(wait_time)
-                continue # 重新跑 loop
-            
-            # 情況 C: 其他錯誤
+                time.sleep(30) # 遇到限制休息久一點
+                continue
             else:
-                print(f"      ❌ Gemini Error {response.status_code}: {response.text}")
                 return "SKIP"
-                
-        except Exception as e:
-            print(f"      ❌ Request Failed: {e}")
+        except:
             return "SKIP"
-            
-    return "SKIP" # 重試多次後放棄
+    return "SKIP"
 
 def main():
-    print(f"[{datetime.now()}] Starting Watchdog v6.0 (Rate-Limit Safe)...")
+    print(f"[{datetime.now()}] Starting Watchdog v7.0 (Details & Efficiency)...")
     
-    # 1. 讀取歷史紀錄 (不再是 Force Reset)
     history = load_history()
-    print(f"Loaded {len(history)} past news items.")
+    print(f"Loaded {len(history)} history items.")
     
     new_alerts = 0
     
@@ -167,41 +168,36 @@ def main():
         for item in news_items:
             title = item.get('title')
             url = item.get('link')
+            snippet = item.get('snippet', '')
             
             if not title or not url: continue
+            clean_url = url.split('?')[0]
             
-            clean_url = url.split('?')[0] # 簡單清理網址
-            
-            # 2. 如果已經分析過，直接跳過 (最省錢的步驟)
             if clean_url in history:
-                print(f"   -> Skipping (Already sent): {str(title)[:20]}...")
+                print(f"   -> Skipping (Old): {str(title)[:20]}...")
                 continue
             
             print(f"   -> Analyzing: {str(title)[:30]}...")
             
-            # 3. 呼叫 AI (內含重試機制)
-            analysis = call_gemini_rest_api(ticker, title, url)
+            # 呼叫 AI，傳入 snippet
+            analysis = call_gemini_rest_api(ticker, title, url, snippet)
             
             if analysis and analysis != "SKIP":
-                print(f"      [AI]: {analysis[:50]}...")
+                print(f"      [AI]: Sent Alert")
                 
                 source_label = item.get('source', 'Web')
-                msg = f"**#{ticker} ({source_label})**\n{analysis}\n[Read Source]({url})"
+                # 組合訊息
+                msg = f"**#{ticker} ({source_label})**\n{analysis}\n\n[Read Source]({url})"
                 
                 send_telegram_message(msg)
                 new_alerts += 1
-                
-                # 加入歷史並存檔
                 history.add(clean_url)
                 
-                # 4. 關鍵：Gemini 2.5 限制每分鐘 5 次
-                # 我們每條休息 15 秒，確保一分鐘最多 4 次，絕對安全
-                print("      💤 Cooling down 15s for API quota...")
-                time.sleep(15)
+                # ✅ 1.5-flash 額度較高，休息 5 秒即可
+                time.sleep(5)
             else:
-                print("      ❌ AI Failed (Skipping Telegram)")
+                print("      ❌ AI Failed")
 
-    # 5. 結束前保存歷史
     save_history(history)
     print(f"--------------------------------------------------")
     print(f"Done. Sent {new_alerts} alerts.")
