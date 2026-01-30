@@ -7,18 +7,17 @@ import google.generativeai as genai
 from datetime import datetime, timedelta
 
 # ================= CONFIGURATION =================
-# Watchlist: 混合了你的長線(GARP)與短線(期權)關注名單
-WATCHLIST = ['HIMS', 'ZETA', 'ODDITY', 'NVDA', 'TSLA', 'AMD', 'OSCR']
+# 注意：Oddity Tech 代碼是 ODD，必須準確
+WATCHLIST = ['HIMS', 'ZETA', 'ODD', 'NVDA', 'TSLA', 'AMD', 'OSCR']
 
-# Keys
+# Environment Variables
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 HISTORY_FILE = 'news_history.json'
-SCAN_INTERVAL = 0 # GitHub Actions 是一次性執行，不需要 while True 循環 (由 cron 控制)
 
-# ================= SYSTEM FUNCTIONS =================
+# ================= FUNCTIONS =================
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -28,122 +27,137 @@ def load_history():
     return set()
 
 def save_history(history_set):
-    # 只保留最近 500 條記錄，防止文件過大
-    clean_history = list(history_set)[-500:]
+    # 只保留最近 300 條，避免 JSON 文件無限膨脹
+    clean_history = list(history_set)[-300:]
     with open(HISTORY_FILE, 'w') as f:
-        json.dump(clean_history, f)
+        json.dump(clean_history, f, indent=2)
 
 def send_telegram_message(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("Error: Telegram credentials missing.")
         return
+    
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
         "parse_mode": "Markdown",
-        "disable_web_page_preview": False
+        "disable_web_page_preview": True # 關閉預覽讓版面更乾淨
     }
     try:
         requests.post(url, json=payload)
     except Exception as e:
         print(f"Telegram Error: {e}")
 
-# ================= CORE LOGIC =================
-
 def get_yfinance_news(ticker):
     """
-    使用 Yahoo Finance 獲取針對性極強的股票新聞
+    從 Yahoo Finance 獲取該 Ticker 的專屬新聞
     """
     try:
+        # yfinance 的 .news 屬性會回傳該股票頁面的最新新聞
         stock = yf.Ticker(ticker)
-        news_list = stock.news  # 返回該股票的最新新聞列表
-        return news_list
+        return stock.news
     except Exception as e:
         print(f"Error fetching {ticker}: {e}")
         return []
 
 def analyze_with_gemini(ticker, title, link):
     """
-    Peter Lynch Persona Analysis
+    Gemini 作為過濾器 (Filter) 和總結者 (Summarizer)
     """
     if not GEMINI_API_KEY:
-        return f"📰 *{ticker} News*\n{title}"
+        return f"📰 News: {title}"
 
     try:
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel('gemini-2.5-flash')
         
-        # Prompt 設計：專注於區分 "噪音" (Motley Fool 意見稿) vs "信號" (財報/合作/FDA)
         prompt = f"""
-        Role: You are Peter Lynch, a GARP investor.
-        Target: Analyze news for stock ${ticker}.
+        You are a Peter Lynch style investor focusing on GARP (Growth at a Reasonable Price).
+        Analyze this news for stock: ${ticker}.
         Headline: "{title}"
         
-        Task:
-        1. Is this 'Hard News' (Earnings, M&A, FDA, Contracts, Lawsuits, Guidance) or 'Fluff/Opinion' (Top 10 stocks, Why stock moved)?
-        2. If Fluff/Opinion -> Reply "SKIP" only.
-        3. If Hard News -> Summarize in 1 bullet point (max 20 words). Identify if Positive (Bullish) or Negative (Bearish).
+        Is this "Material News" (Earnings, M&A, FDA approval, Partnership, Contracts, Short Report) OR "Noise" (Opinion, Top 10 lists, generic market wrap)?
         
-        Output Format:
-        [Sentiment Emoji] Summary
-        (e.g., 🟢 Q3 Earnings beat exp. by 10%.)
+        1. If NOISE/OPINION -> Reply exactly "SKIP".
+        2. If MATERIAL -> Reply with a strict format:
+           "Emoji | One-sentence summary (Max 15 words) | Sentiment (Bullish/Bearish)"
+           
+        Examples:
+        - "🟢 | Q3 Revenue grew 40% YoY beating estimates | Bullish"
+        - "🔴 | CFO resigned unexpectedly amid audit probe | Bearish"
         """
         
-        response = model.generate_content(prompt)
+        # 設置低 Temperature 以獲得穩定的格式
+        response = model.generate_content(prompt, generation_config={"temperature": 0.1})
         result = response.text.strip()
         
-        # 如果 Gemini 認為是廢話，直接回傳 SKIP
         if "SKIP" in result:
             return "SKIP"
-            
         return result
+
     except Exception as e:
         print(f"Gemini Error: {e}")
-        # 如果 AI 失敗，為了不漏掉新聞，還是回傳標題
-        return f"⚠️ AI Error: {title}"
+        return f"⚠️ AI N/A: {title}"
 
 def main():
-    print(f"[{datetime.now()}] Starting Scraper Job...")
-    history = load_history()
-    new_links_found = 0
+    print(f"[{datetime.now()}] Starting YFinance Scan...")
     
+    # 1. 讀取歷史
+    history = load_history()
+    initial_count = len(history)
+    print(f"Loaded {initial_count} past articles.")
+    
+    new_alerts = 0
+    
+    # 2. 遍歷清單
     for ticker in WATCHLIST:
         print(f"Checking {ticker}...")
         news_items = get_yfinance_news(ticker)
         
+        if not news_items:
+            print(f" -> No news data found for {ticker}")
+            continue
+
         for item in news_items:
-            # YFinance 結構: {'title': '...', 'link': '...', 'providerPublishTime': ...}
+            # yfinance news 格式通常包含 link, title, providerPublishTime
             url = item.get('link')
             title = item.get('title')
+            pub_time = item.get('providerPublishTime', 0)
             
-            # 1. 檢查是否已處理過
+            # 過濾 1: 是否已發送過
             if url in history:
                 continue
                 
-            # 2. 時間過濾：只看過去 24 小時內的新聞 (YF 有時會給舊的)
-            pub_time = item.get('providerPublishTime', 0)
-            if datetime.fromtimestamp(pub_time) < datetime.now() - timedelta(hours=24):
+            # 過濾 2: 時效性 (只看過去 24 小時)
+            # 這是為了防止第一次運行時把一年前的新聞都發出來
+            article_time = datetime.fromtimestamp(pub_time)
+            if article_time < datetime.now() - timedelta(hours=24):
                 continue
 
-            # 3. AI 分析
-            print(f"Analyzing: {title}")
+            # 過濾 3: AI 分析
             analysis = analyze_with_gemini(ticker, title, url)
             
-            # 4. 根據結果推送
             if analysis != "SKIP":
-                msg = f"**#{ticker}** {analysis}\n[Read Source]({url})"
+                # 構建消息
+                msg = f"**#{ticker}**\n{analysis}\n[Read Source]({url})"
                 send_telegram_message(msg)
-                new_links_found += 1
-                time.sleep(2) # 避免 Telegram 刷屏過快
-            
-            # 5. 記錄到歷史 (即使是 SKIP 的也要記錄，以免下次重複分析)
+                new_alerts += 1
+                time.sleep(2) # Telegram Rate Limit 保護
+            else:
+                print(f" -> Skipped (Noise): {title}")
+
+            # 加入歷史 (無論是 SKIP 還是發送，都記錄下來以免重複分析)
             history.add(url)
             
-        time.sleep(1) # 避免對 Yahoo 請求過快
+        time.sleep(1) # YFinance Rate Limit 保護
 
-    save_history(history)
-    print(f"Job Done. Sent {new_links_found} alerts.")
+    # 3. 保存歷史
+    if len(history) > initial_count:
+        save_history(history)
+        print(f"History updated. New items: {len(history) - initial_count}")
+    else:
+        print("No new unique articles found.")
 
 if __name__ == "__main__":
     main()
