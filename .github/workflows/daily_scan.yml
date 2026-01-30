@@ -44,7 +44,7 @@ jobs:
         
         # 檢查是否有變更
         if git diff --staged --quiet; then
-          print("No changes to history. Skipping push.")
+          echo "No changes to history. Skipping push."
         else
           git commit -m "Update news history [skip ci]"
           git push
