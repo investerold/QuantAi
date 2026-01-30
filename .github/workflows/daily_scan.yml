@@ -2,9 +2,13 @@ name: Market Watchdog (YFinance)
 
 on:
   schedule:
-    # 每 20 分鐘運行一次 (YFinance 沒有嚴格限制，但 20 分鐘足夠即時)
-    - cron: '*/20 * * * *'
-  workflow_dispatch: # 允許手動點擊按鈕測試
+    # 每 30 分鐘運行一次 (YFinance 不需要太頻繁，30分鐘足夠即時且穩定)
+    - cron: '*/30 * * * *'
+  workflow_dispatch: # 手動觸發按鈕
+
+# 關鍵：賦予這個 Workflow 寫入倉庫的權限，以便保存 news_history.json
+permissions:
+  contents: write
 
 jobs:
   run-scanner:
@@ -20,32 +24,28 @@ jobs:
         python-version: '3.9'
         
     - name: Install Dependencies
-      # 加入 yfinance
       run: pip install requests yfinance google-generativeai
 
-    - name: Restore History
-      # 這是關鍵：嘗試恢復上次運行的歷史記錄文件，避免重複發送
-      uses: actions/cache@v3
-      with:
-        path: news_history.json
-        key: news-history-${{ github.run_id }}
-        restore-keys: |
-          news-history-
-
-    - name: Run Script
+    - name: Run Watchdog Script
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: python news_watchdog.py
       
-    - name: Save History
-      # 如果有新文件生成，上傳它以便下次使用 (注意：GitHub Actions 的緩存主要用於依賴，
-      # 對於動態數據文件，更好的做法是用 Git Commit Push 回去，但為了簡單，
-      # 這裡我們用一個簡單的 Commit 機制)
+    - name: Commit and Push History
+      # 只有當 news_history.json 發生變化時才執行 Commit
       run: |
         git config --global user.name "MarketBot"
         git config --global user.email "bot@github.com"
+        
+        # 嘗試添加文件 (如果文件是新建的)
         git add news_history.json
-        # 只有當有變更時才 commit
-        git diff --quiet && git diff --staged --quiet || (git commit -m "Update news history" && git push)
+        
+        # 檢查是否有變更
+        if git diff --staged --quiet; then
+          print("No changes to history. Skipping push.")
+        else
+          git commit -m "Update news history [skip ci]"
+          git push
+        fi
