@@ -7,7 +7,7 @@ import google.generativeai as genai
 from datetime import datetime
 
 # ================= CONFIGURATION =================
-WATCHLIST = ['HIMS', 'ZETA', 'ODD', 'NVDA', 'TSLA', 'AMD', 'OSCR', 'MARA', 'COIN']
+WATCHLIST = ['HIMS', 'ZETA', 'ODD', 'NVDA', 'TSLA', 'AMD', 'OSCR']
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -71,8 +71,15 @@ def analyze_with_gemini(ticker, title, link):
         return f"⚠️ AI Error: {title}"
 
 def main():
-    print(f"[{datetime.now()}] Starting Watchdog v5.2...")
-    history = load_history()
+    print(f"[{datetime.now()}] Starting Watchdog v5.3 (RESET MODE)...")
+    
+    # ❌ 舊的讀取邏輯 (暫時註釋掉)
+    # history = load_history()
+    
+    # ✅ 新的重置邏輯：強制為空
+    history = set() 
+    print("!!! FORCE HISTORY RESET: IGNORING PAST RECORDS !!!")
+    
     new_alerts = 0
     
     for ticker in WATCHLIST:
@@ -84,33 +91,38 @@ def main():
             url = item.get('link')
             title = item.get('title')
             
-            # 1. 基礎檢查：如果標題或 URL 是空的就跳過 (解決 NoneType 報錯)
-            if not url or not title:
-                continue
+            # 安全檢查
+            if not url or not title: continue
             
-            # 2. 歷史重複檢查
-            if url in history:
-                continue
+            # 因為 history 已經被清空，這裡的 if url in history 將永遠為 False
+            # 所以每一條新聞都會進入 Analyzing...
             
-            # 3. AI 分析
-            # 安全地截取標題用於 Log
             safe_title = str(title)[:30]
             print(f"   -> Analyzing: {safe_title}...")
             
             analysis = analyze_with_gemini(ticker, title, url)
             
+            # 打印 Gemini 的回應，讓我們看看它到底說了什麼
+            print(f"      [Gemini]: {analysis}") 
+            
             if analysis != "SKIP":
                 msg = f"**#{ticker}**\n{analysis}\n[Read Source]({url})"
                 send_telegram_message(msg)
                 new_alerts += 1
-                time.sleep(2) # 避免 TG 頻率限制
+                print("      ✅ SENT ALERT")
+                time.sleep(2)
+            else:
+                print("      ❌ SKIPPED BY AI")
             
+            # 雖然重置了讀取，但我們還是要把發過的加回去，為了下一次運行
             history.add(url)
         
-        time.sleep(1) # 避免 Yahoo 頻率限制
+        time.sleep(1)
 
-    save_history(history)
+    # 運行完這次後，記得把 main 改回來，或者保留這行註釋以免無限循環
+    # save_history(history) 
     print(f"Done. Sent {new_alerts} alerts.")
+
 
 if __name__ == "__main__":
     main()
