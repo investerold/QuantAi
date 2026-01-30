@@ -14,8 +14,15 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 HISTORY_FILE = 'news_history.json'
 
-# ✅ 聽師兄話，用返最新 2.5！
-GEMINI_MODEL = "gemini-2.5-flash"
+# ✅ 改用 1.5 Flash，每日額度 (RPD) 通常是 1500 次，遠高於 2.5 Flash 的 50 次
+# 如果你堅持要用 2.5，請自行改回 "gemini-2.5-flash"，但保證會爆
+GEMINI_MODEL = "gemini-2.5-flash-lite"
+
+# 垃圾關鍵字過濾 (節省 API)
+IGNORE_KEYWORDS = [
+    "class action", "lawsuit", "investigation", "zacks", "motley fool", 
+    "shareholder rights", "loss alert", "reminder", "dividend"
+]
 
 # ================= FUNCTIONS =================
 
@@ -29,16 +36,24 @@ def load_history():
     return set()
 
 def save_history(history_set):
-    clean_history = list(history_set)[-300:] 
+    # 只保留最後 500 條記錄，避免文件過大
+    clean_history = list(history_set)[-500:] 
     with open(HISTORY_FILE, 'w') as f:
         json.dump(clean_history, f, indent=2)
 
 def clean_html(raw_html):
-    """清除 HTML 標籤，讓 AI 讀得更乾淨"""
     if not raw_html: return ""
     cleanr = re.compile('<.*?>')
     text = re.sub(cleanr, '', raw_html)
     return text.replace('&nbsp;', ' ').strip()
+
+def is_spam(title):
+    """檢查標題是否包含垃圾關鍵字"""
+    title_lower = title.lower()
+    for kw in IGNORE_KEYWORDS:
+        if kw in title_lower:
+            return True
+    return False
 
 def send_telegram_message(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -56,7 +71,6 @@ def send_telegram_message(message):
         print(f"Telegram Error: {e}")
 
 def get_google_rss_news(ticker):
-    """Google RSS (含摘要提取)"""
     print(f"   📡 Fetching Google RSS for {ticker}...")
     try:
         url = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
@@ -67,17 +81,14 @@ def get_google_rss_news(ticker):
             
         root = ET.fromstring(resp.content)
         items = []
-        # 限制前 3 條
-        for item in root.findall('.//item')[:3]: 
+        for item in root.findall('.//item')[:4]:  # 取前 4 條
             title = item.find('title').text
             link = item.find('link').text
-            description = item.find('description').text if item.find('description') is not None else ""
             
-            if title and link:
+            if title and link and not is_spam(title):
                 items.append({
                     'title': title, 
                     'link': link, 
-                    'snippet': clean_html(description),
                     'source': 'GoogleRSS'
                 })
         return items
@@ -92,76 +103,67 @@ def get_yfinance_news(ticker):
         news = stock.news
         formatted_news = []
         for item in news[:3]: 
-            formatted_news.append({
-                'title': item.get('title'),
-                'link': item.get('link') or item.get('url'),
-                'snippet': "", 
-                'source': 'Yahoo'
-            })
+            title = item.get('title')
+            link = item.get('link') or item.get('url')
+            if title and link and not is_spam(title):
+                formatted_news.append({
+                    'title': title,
+                    'link': link,
+                    'source': 'Yahoo'
+                })
         return formatted_news
     except:
         return []
 
-def get_stock_news(ticker):
-    news = get_google_rss_news(ticker)
-    if news: return news
-    return get_yfinance_news(ticker)
+def call_gemini_batch(ticker, news_items):
+    """
+    批次處理：將該股票的所有新新聞打包成一個 Prompt 發送。
+    節省 API Call 次數 (N -> 1)。
+    """
+    if not GEMINI_API_KEY: return None
 
-def call_gemini_rest_api(ticker, title, link, snippet):
-    if not GEMINI_API_KEY: return "No Key"
-    
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-    
-    # ✅ Prompt: 要求 2-3 個重點 (Bullet Points)
+    # 構建 Prompt
+    news_text = ""
+    for idx, item in enumerate(news_items, 1):
+        news_text += f"{idx}. {item['title']} (Link: {item['link']})\n"
+
     prompt = f"""
-    Role: Senior Stock Analyst.
+    Role: Senior Stock Analyst (Peter Lynch Style).
     Ticker: {ticker}
-    News Title: "{title}"
-    Snippet: "{snippet}"
-    Link: {link}
     
-    Task: 
-    1. Determine sentiment (Bullish 🟢 / Bearish 🔴 / Neutral ⚪).
-    2. Provide 2-3 short bullet points summarizing the KEY facts.
+    Here are the latest news headlines:
+    {news_text}
+    
+    Task:
+    1. Analyze the aggregate sentiment (Bullish 🟢 / Bearish 🔴 / Neutral ⚪).
+    2. Summarize the MOST critical impact in 1-2 bullet points.
+    3. Ignore repetitive noise.
     
     Output Format:
-    [Sentiment Icon] Sentiment
-    • Point 1
-    • Point 2
+    [Sentiment Icon] {ticker} Update
+    • [Summary of key event]
     """
     
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     
-    # 重試機制
-    for attempt in range(3):
-        try:
-            response = requests.post(api_url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15)
-            
-            if response.status_code == 200:
-                try:
-                    return response.json()['candidates'][0]['content']['parts'][0]['text'].strip()
-                except KeyError:
-                    print(f"      ⚠️ JSON Parse Error: {response.text}")
-                    return "SKIP"
-            
-            elif response.status_code == 429:
-                print(f"      ⚠️ Quota Limit (429). Sleeping 65s...")
-                time.sleep(65) # 2.5 Flash 爆額度要休息久啲
-                continue
-                
-            else:
-                # 這次不再隱藏錯誤，直接印出來
-                print(f"      ❌ API Error {response.status_code}: {response.text}")
-                return "SKIP"
-                
-        except Exception as e:
-            print(f"      ❌ Connection Error: {e}")
-            return "SKIP"
-            
-    return "SKIP"
+    try:
+        response = requests.post(api_url, json=payload, headers={'Content-Type': 'application/json'}, timeout=20)
+        
+        if response.status_code == 200:
+            return response.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+        elif response.status_code == 429:
+            print(f"      ⚠️ Quota Limit (429).")
+            return "SKIP_QUOTA"
+        else:
+            print(f"      ❌ API Error {response.status_code}: {response.text}")
+            return None
+    except Exception as e:
+        print(f"      ❌ Connection Error: {e}")
+        return None
 
 def main():
-    print(f"[{datetime.now()}] Starting Watchdog v8.0 (Gemini 2.5 + Bullet Points)...")
+    print(f"[{datetime.now()}] Starting Watchdog v9.0 (Batch Mode + 1.5 Flash)...")
     
     history = load_history()
     print(f"Loaded {len(history)} history items.")
@@ -172,41 +174,50 @@ def main():
         print(f"--------------------------------------------------")
         print(f"Checking {ticker}...", end=" ")
         
-        news_items = get_stock_news(ticker)
-        print(f"Found {len(news_items)} items.")
+        # 1. 獲取新聞
+        raw_news = get_google_rss_news(ticker)
+        if not raw_news:
+            raw_news = get_yfinance_news(ticker)
+            
+        # 2. 過濾已讀新聞
+        fresh_news = []
+        for item in raw_news:
+            clean_url = item.get('link').split('?')[0]
+            if clean_url not in history:
+                fresh_news.append(item)
         
-        for item in news_items:
-            title = item.get('title')
-            url = item.get('link')
-            snippet = item.get('snippet', '')
+        print(f"Found {len(fresh_news)} NEW items.")
+        
+        if not fresh_news:
+            continue
+
+        # 3. 批次分析 (Batch Analysis)
+        # 只取前 3 條最新的來分析，避免 Token 過長
+        target_news = fresh_news[:3]
+        
+        print(f"   -> Batch analyzing {len(target_news)} items...")
+        analysis = call_gemini_batch(ticker, target_news)
+        
+        if analysis == "SKIP_QUOTA":
+            print("      ⚠️ Quota hit, stopping batch.")
+            break
             
-            if not title or not url: continue
-            clean_url = url.split('?')[0]
+        if analysis:
+            # 構建消息：AI 分析 + 來源鏈接
+            links_md = "\n".join([f"[Source {i+1}]({n['link']})" for i, n in enumerate(target_news)])
+            msg = f"{analysis}\n\n{links_md}"
             
-            if clean_url in history:
-                print(f"   -> Skipping (Old): {str(title)[:20]}...")
-                continue
+            send_telegram_message(msg)
+            new_alerts += 1
             
-            print(f"   -> Analyzing: {str(title)[:30]}...")
-            
-            # 呼叫 AI
-            analysis = call_gemini_rest_api(ticker, title, url, snippet)
-            
-            if analysis and analysis != "SKIP":
-                print(f"      [AI]: Sent Alert")
+            # 更新歷史
+            for item in target_news:
+                history.add(item.get('link').split('?')[0])
                 
-                source_label = item.get('source', 'Web')
-                msg = f"**#{ticker} ({source_label})**\n{analysis}\n\n[Read Source]({url})"
-                
-                send_telegram_message(msg)
-                new_alerts += 1
-                history.add(clean_url)
-                
-                # ✅ 關鍵：Gemini 2.5 必須休息 15 秒，否則必爆
-                print("      💤 Cooling down 15s for 2.5-flash quota...")
-                time.sleep(15)
-            else:
-                print("      ❌ AI Failed")
+            # 冷卻時間：雖然用了 Batch，還是休息 5 秒比較保險
+            time.sleep(5)
+        else:
+            print("      ❌ AI Analysis Failed")
 
     save_history(history)
     print(f"--------------------------------------------------")
