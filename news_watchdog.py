@@ -3,6 +3,7 @@ import json
 import requests
 import os
 import yfinance as yf
+import xml.etree.ElementTree as ET
 from datetime import datetime
 
 # ================= CONFIGURATION =================
@@ -10,9 +11,8 @@ WATCHLIST = ['HIMS', 'ZETA', 'ODD', 'NVDA', 'TSLA', 'AMD', 'OSCR']
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-HISTORY_FILE = 'news_history.json'
 
-# 使用最穩定的模型名稱
+# 模型設定
 GEMINI_MODEL = "gemini-1.5-flash"
 
 # ================= FUNCTIONS =================
@@ -33,29 +33,60 @@ def send_telegram_message(message):
     except Exception as e:
         print(f"Telegram Error: {e}")
 
-def get_yfinance_news(ticker):
+def get_google_rss_news(ticker):
     """
-    使用偽裝 Header 獲取新聞，避免被 Yahoo 攔截
+    備用方案：當 yfinance 失敗時，使用 Google News RSS
+    這在 GitHub Actions 上非常穩定。
     """
+    print(f"   ⚠️ Switching to Google News RSS for {ticker}...")
     try:
-        # 1. 建立偽裝的 Session
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        })
+        # Google News RSS 網址
+        url = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
+        resp = requests.get(url, timeout=10)
         
-        # 2. 傳入 session 獲取 Ticker
-        stock = yf.Ticker(ticker, session=session)
-        news = stock.news
+        if resp.status_code != 200:
+            return []
+            
+        # 解析 XML
+        root = ET.fromstring(resp.content)
+        items = []
         
-        return news if news else []
+        # 只取前 5 條最新的
+        for item in root.findall('.//item')[:5]:
+            title = item.find('title').text if item.find('title') is not None else "No Title"
+            link = item.find('link').text if item.find('link') is not None else ""
+            pub_date = item.find('pubDate').text if item.find('pubDate') is not None else ""
+            
+            items.append({
+                'title': title,
+                'link': link,
+                'published': pub_date,
+                'source': 'GoogleRSS' # 標記來源
+            })
+        return items
     except Exception as e:
-        print(f"Error fetching {ticker}: {e}")
+        print(f"   ❌ Google RSS Failed: {e}")
         return []
+
+def get_stock_news(ticker):
+    """
+    主要邏輯：優先嘗試 yfinance，如果失敗或為空，轉用 Google RSS
+    """
+    # 1. 嘗試 yfinance (移除 session 參數，讓它自己處理)
+    try:
+        stock = yf.Ticker(ticker)
+        news = stock.news
+        if news and len(news) > 0:
+            return news
+    except Exception as e:
+        print(f"   yfinance error: {e}")
+    
+    # 2. 如果 yfinance 沒資料，使用備用方案
+    return get_google_rss_news(ticker)
 
 def call_gemini_rest_api(ticker, title, link):
     """
-    不使用 SDK，直接用 Requests 打 REST API，避免套件版本問題
+    直接打 REST API，不依賴 SDK
     """
     if not GEMINI_API_KEY:
         return f"📰 News: {title} (No AI Key)"
@@ -86,12 +117,10 @@ def call_gemini_rest_api(ticker, title, link):
             return "SKIP"
             
         data = response.json()
-        # 解析 JSON 結構
         try:
             text = data['candidates'][0]['content']['parts'][0]['text']
             return text.strip()
         except KeyError:
-            print(f"Gemini JSON Parse Error: {data}")
             return "SKIP"
             
     except Exception as e:
@@ -99,66 +128,63 @@ def call_gemini_rest_api(ticker, title, link):
         return "SKIP"
 
 def main():
-    print(f"[{datetime.now()}] Starting Watchdog (REST API Version)...")
-    
-    # !!! 測試模式：強制清空歷史，確保每一條新聞都被分析 !!!
-    history = set()
+    print(f"[{datetime.now()}] Starting Watchdog (Hybrid Mode)...")
     print("!!! FORCE RESET MODE ACTIVE !!!")
     
     new_alerts = 0
-    
+    # 這裡可以加入讀取歷史的邏輯，但在 Debug 模式我們先用空的
+    history = set() 
+
     for ticker in WATCHLIST:
         print(f"--------------------------------------------------")
         print(f"Checking {ticker}...", end=" ")
         
-        # 獲取新聞
-        news_items = get_yfinance_news(ticker)
+        # 獲取新聞 (整合了 yfinance 和 Google RSS)
+        news_items = get_stock_news(ticker)
         print(f"Found {len(news_items)} items.")
         
         if not news_items:
-            print("   -> No news found (Yahoo might be blocking or no data).")
+            print("   -> No news found from ANY source.")
             continue
 
-        # 除錯：印出第一條的結構，讓你確認 Key 是什麼
-        first_keys = list(news_items[0].keys())
-        print(f"🔍 [DEBUG KEYS]: {first_keys}")
-
         for item in news_items:
-            # 嘗試抓取各種可能的 URL Key
-            url = item.get('link') or item.get('url') or item.get('longURL')
+            # 處理不同來源的 Key 差異
             title = item.get('title')
+            url = item.get('link') or item.get('url')
             
-            # 如果主要 Key 沒抓到，嘗試從 clickThroughUrl 抓
+            # yfinance 特有的備用 link
             if not url and 'clickThroughUrl' in item:
                 url = item['clickThroughUrl'].get('url')
 
             if not url or not title:
-                # 只有當真的缺資料時才印這行，避免洗版
-                # print(f"      ❌ Skip: Missing Data")
                 continue
             
-            # 去除 URL 參數，避免重複 (例如 ?query=...)
+            # 簡單過濾掉過長的 URL 參數
             clean_url = url.split('?')[0]
             
-            # 因為是 FORCE RESET 模式，這裡暫時忽略 history 檢查
+            # 如果你要防止重複發送，可以在這裡檢查 history
             # if clean_url in history: continue
 
-            print(f"   -> Found: {str(title)[:30]}...")
+            print(f"   -> Analyzing: {str(title)[:30]}...")
             
-            # 呼叫 AI
             analysis = call_gemini_rest_api(ticker, title, url)
             
             if analysis and analysis != "SKIP":
                 print(f"      [AI]: {analysis[:50]}...")
                 
-                msg = f"**#{ticker}**\n{analysis}\n[Read Source]({url})"
+                # 訊息內容
+                source_label = item.get('source', 'Yahoo') # 標記來源
+                msg = f"**#{ticker} ({source_label})**\n{analysis}\n[Read Source]({url})"
+                
                 send_telegram_message(msg)
                 new_alerts += 1
                 
                 history.add(clean_url)
-                time.sleep(2) # 避免打太快
+                
+                # 休息一下，避免被 API 限制
+                time.sleep(2)
             else:
-                print("      ❌ AI Failed or Skipped")
+                print("      ❌ AI Failed")
 
         time.sleep(1)
 
