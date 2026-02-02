@@ -48,4 +48,17 @@ def check_sec_filings():
         print(f"Error: {e}")
 
 if __name__ == "__main__":
+    print("Starting monitor...")
+    
+    # --- 這是新增的測試代碼 ---
+    try:
+        test_msg = "✅ **System Check**: Monitor is running! (這是測試訊息)"
+        print("Attempting to send test message...")
+        send_telegram_msg(test_msg)
+        print("Test message sent.")
+    except Exception as e:
+        print(f"Failed to send test message: {e}")
+    # ------------------------
+
     check_sec_filings()
+
