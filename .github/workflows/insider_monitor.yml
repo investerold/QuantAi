@@ -1,0 +1,29 @@
+name: Insider Trading Monitor
+
+on:
+  schedule:
+    # 每 15 分鐘運行一次 (GitHub Actions 免費版最小間隔約 5-15 分鐘)
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # 允許手動測試
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Run Monitor Script
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python monitor.py
