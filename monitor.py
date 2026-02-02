@@ -4,7 +4,7 @@ from datetime import datetime
 import os
 
 # 1. 設定你的關注列表 (Watchlist)
-MY_STOCKS = ['ZETA', 'ODD', 'HIMS', 'OSCR', 'TSLA', 'NVDA', 'AMD']
+MY_STOCKS = ['ZETA', 'ODD', 'HIMS', 'OSCR']
 
 # 2. 設定 Telegram Bot (稍後在Telegram申請，免費的)
 TELEGRAM_TOKEN = os.environ.get('TG_TOKEN') # 從GitHub Secrets讀取
@@ -47,5 +47,21 @@ def check_sec_filings():
     except Exception as e:
         print(f"Error: {e}")
 
+# ... 上面的代碼不用動 ...
+
 if __name__ == "__main__":
+    print("Starting monitor...")
+    
+    # --- 這是新增的測試代碼 ---
+    try:
+        test_msg = "✅ **System Check**: Monitor is running! (這是測試訊息)"
+        print("Attempting to send test message...")
+        send_telegram_msg(test_msg)
+        print("Test message sent.")
+    except Exception as e:
+        print(f"Failed to send test message: {e}")
+    # ------------------------
+
     check_sec_filings()
+
+
