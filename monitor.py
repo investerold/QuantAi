@@ -1,67 +1,79 @@
 import requests
 import xml.etree.ElementTree as ET
-from datetime import datetime
 import os
 
-# 1. 設定你的關注列表 (Watchlist)
-MY_STOCKS = ['ZETA', 'ODD', 'HIMS', 'OSCR']
+# --- 修正部分：使用「公司名稱關鍵字」而非代碼 ---
+# 格式: "股票代碼": "SEC文件中的公司名稱關鍵字"
+WATCHLIST = {
+    'ZETA': 'Zeta Global',       # 抓 Zeta Global Holdings
+    'ODD':  'Oddity Tech',       # 抓 Oddity Tech Ltd (解決找不到 ODD 的問題)
+    'HIMS': 'Hims & Hers',       # 抓 Hims & Hers Health
+    'OSCR': 'Oscar Health',      # 抓 Oscar Health, Inc.
+    'TSLA': 'Tesla',             # 測試用
+}
 
-# 2. 設定 Telegram Bot (稍後在Telegram申請，免費的)
-TELEGRAM_TOKEN = os.environ.get('TG_TOKEN') # 從GitHub Secrets讀取
+TELEGRAM_TOKEN = os.environ.get('TG_TOKEN')
 CHAT_ID = os.environ.get('TG_CHAT_ID')
 
 def send_telegram_msg(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    requests.post(url, json=payload)
+    try:
+        requests.post(url, json=payload)
+    except Exception as e:
+        print(f"Msg failed: {e}")
 
 def check_sec_filings():
-    # SEC Form 4 的 RSS Feed (只看 Form 4 和 4/A)
+    # 這是 SEC 官方的「最新 Form 4」RSS Feed
     url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&CIK=&type=4&company=&dateb=&owner=include&start=0&count=100&output=atom"
     
-    # 必須加上 User-Agent，否則 SEC 會擋
-    headers = {'User-Agent': 'HKBU_Student_Project/1.0 (your_email@life.hkbu.edu.hk)'}
+    # 必須偽裝成瀏覽器，否則 SEC 會擋
+    headers = {
+        'User-Agent': 'HKBU_Student_Project/1.0 (jeffy_trader@hkbu.edu.hk)',
+        'Accept-Encoding': 'gzip, deflate',
+        'Host': 'www.sec.gov'
+    }
     
     try:
-        response = requests.get(url, headers=headers)
-        root = ET.fromstring(response.content)
+        print("Fetching SEC data...")
+        response = requests.get(url, headers=headers, timeout=10)
         
-        # 解析每一份新文件
-        ns = {'atom': 'http://www.w3.org/2005/Atom'}
+        # 如果 SEC 伺服器拒絕 (403/404)，報錯
+        if response.status_code != 200:
+            print(f"Error: SEC returned status code {response.status_code}")
+            return
+
+        # 解析 XML
+        root = ET.fromstring(response.content)
+        ns = {'atom': 'http://www.w3.org/2005/Atom'} # 這是 XML 的命名空間
+        
+        found_count = 0
+        
+        # 遍歷每一份新文件
         for entry in root.findall('atom:entry', ns):
             title = entry.find('atom:title', ns).text
             link = entry.find('atom:link', ns).attrib['href']
-            summary = entry.find('atom:summary', ns).text
             
-            # 檢查標題中是否包含你的股票代碼
-            # 標題格式通常是: "4 - Zeta Global Holdings Corp. (0001855631) (Issuer)"
-            for ticker in MY_STOCKS:
-                # 這裡做一個簡單的匹配，實際運作可能需要獲取CIK對照表以求精確，但文字匹配對小列表足夠
-                if ticker in title or ticker in summary: 
-                    # 這裡可以進一步加邏輯：讀取數據庫看是否已發送過，避免重複
-                    msg = f"🚨 **Insider Alert: {ticker}**\n\n發現新的 Form 4 文件！\n[點擊查看 SEC 文件]({link})"
-                    print(msg)
-                    if TELEGRAM_TOKEN:
-                        send_telegram_msg(msg)
+            # --- 核心邏輯修正 ---
+            # 檢查我們的 Watchlist 關鍵字是否出現在標題中
+            for ticker, keyword in WATCHLIST.items():
+                if keyword.lower() in title.lower():
+                    print(f"Found match: {ticker} -> {title}")
+                    
+                    msg = (
+                        f"🚨 **Insider Activity Detected!**\n\n"
+                        f"**Stock:** #{ticker}\n"
+                        f"**Company:** {title.split('(')[0].strip()}\n"
+                        f"**Form:** SEC Form 4 (Insider Trade)\n\n"
+                        f"[View Official Filing]({link})"
+                    )
+                    send_telegram_msg(msg)
+                    found_count += 1
+        
+        print(f"Check complete. Found {found_count} relevant filings.")
                         
     except Exception as e:
-        print(f"Error: {e}")
-
-# ... 上面的代碼不用動 ...
+        print(f"Critical Error: {e}")
 
 if __name__ == "__main__":
-    print("Starting monitor...")
-    
-    # --- 這是新增的測試代碼 ---
-    try:
-        test_msg = "✅ **System Check**: Monitor is running! (這是測試訊息)"
-        print("Attempting to send test message...")
-        send_telegram_msg(test_msg)
-        print("Test message sent.")
-    except Exception as e:
-        print(f"Failed to send test message: {e}")
-    # ------------------------
-
     check_sec_filings()
-
-
