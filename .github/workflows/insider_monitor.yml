@@ -2,9 +2,8 @@ name: Insider Trading Monitor
 
 on:
   schedule:
-    # 每 15 分鐘運行一次 (GitHub Actions 免費版最小間隔約 5-15 分鐘)
-    - cron: '*/15 * * * *'
-  workflow_dispatch: # 允許手動測試
+    - cron: '*/15 * * * *' # 每 15 分鐘
+  workflow_dispatch:
 
 jobs:
   build:
@@ -19,8 +18,9 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
+        # 新增 python-dateutil 用於解析時間
         run: |
-          pip install requests
+          pip install requests python-dateutil beautifulsoup4 lxml
 
       - name: Run Monitor Script
         env:
