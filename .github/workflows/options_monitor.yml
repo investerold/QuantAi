@@ -1,0 +1,31 @@
+name: Options Activity Monitor
+
+on:
+  schedule:
+    # UTC 14:30 是美股開盤。
+    # 這裡設定每小時的第 30 分鐘運行 (14:30, 15:30 ... 20:30 UTC)
+    - cron: '30 14-20 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  scan-options:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Options Scanner
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python options_monitor.py
