@@ -20,7 +20,7 @@ TELEGRAM_TOKEN = os.environ.get('TG_TOKEN')
 CHAT_ID = os.environ.get('TG_CHAT_ID')
 
 # 為了防止漏抓，保持 20 分鐘的回溯窗口 (配合 Cron 15分鐘)
-LOOKBACK_MINUTES = 20
+LOOKBACK_MINUTES = 1440
 
 def send_telegram_msg(message):
     if not TELEGRAM_TOKEN or not CHAT_ID:
@@ -195,3 +195,4 @@ def check_sec_filings():
 
 if __name__ == "__main__":
     check_sec_filings()
+
