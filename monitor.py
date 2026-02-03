@@ -9,7 +9,7 @@ import re
 
 # --- 配置區 ---
 WATCHLIST = {
-    'ZETA': 'Zeta Global',
+    'NVDA': 'NVIDIA',
     'ODD':  'Oddity Tech',
     'HIMS': 'Hims & Hers',
     'OSCR': 'Oscar Health',
@@ -195,4 +195,5 @@ def check_sec_filings():
 
 if __name__ == "__main__":
     check_sec_filings()
+
 
