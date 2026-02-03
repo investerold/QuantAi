@@ -6,12 +6,12 @@ import time
 from datetime import datetime, timezone
 
 # --- 配置區 ---
-WATCHLIST = ['ZETA', 'ODD', 'HIMS', 'OSCR',] # 加入你想監控的
+WATCHLIST = ['ZETA', 'ODD', 'HIMS', 'OSCR']
 
 # 異動標準
-MIN_VOLUME = 500          # 最小成交量 (張)
-VOL_OI_RATIO = 1.2        # 成交量是未平倉量的多少倍 (1.2 代表多出 20% 新倉)
-CHECK_NEXT_N_EXPIRY = 2   # 只檢查最近 N 個到期日 (為了速度)
+MIN_VOLUME = 500          # 最小成交量
+VOL_OI_RATIO = 1.2        # 量/倉比
+CHECK_NEXT_N_EXPIRY = 2   # 檢查最近 N 個到期日
 
 TELEGRAM_TOKEN = os.environ.get('TG_TOKEN')
 CHAT_ID = os.environ.get('TG_CHAT_ID')
@@ -32,33 +32,46 @@ def send_telegram_msg(message):
     except Exception as e:
         print(f"Msg failed: {e}")
 
+def get_sentiment(opt_type, change_pct):
+    """
+    根據期權類型和價格變化推斷情緒
+    """
+    if change_pct > 0:
+        action = "BUYING (Long)"
+        # 買 Call 是看漲，買 Put 是看跌
+        sentiment = "🟢 BULLISH" if opt_type == 'CALL' else "🔴 BEARISH"
+    elif change_pct < 0:
+        action = "SELLING (Short)"
+        # 賣 Call 是看跌，賣 Put 是看漲 (支撐)
+        sentiment = "🔴 BEARISH" if opt_type == 'CALL' else "🟢 BULLISH"
+    else:
+        action = "Neutral"
+        sentiment = "⚪ NEUTRAL"
+    
+    return action, sentiment
+
 def analyze_options(ticker):
     print(f"🔍 Scanning {ticker}...")
     try:
         stock = yf.Ticker(ticker)
         
-        # 獲取當前股價
+        # 獲取現價
         current_price = stock.fast_info.get('lastPrice', 0)
         if current_price == 0:
-            # Fallback
             hist = stock.history(period="1d")
             if not hist.empty:
                 current_price = hist['Close'].iloc[-1]
         
-        # 獲取期權鏈日期
         expirations = stock.options
         if not expirations:
-            print(f"   No options data for {ticker}")
             return
 
         alerts = []
 
-        # 只檢查最近的 N 個到期日
         for exp_date in expirations[:CHECK_NEXT_N_EXPIRY]:
-            # 獲取 Call 和 Put
             opt_chain = stock.option_chain(exp_date)
             
-            # 合併 Call 和 Put 進行遍歷，標記類型
+            # 合併數據
             calls = opt_chain.calls
             calls['Type'] = 'CALL'
             puts = opt_chain.puts
@@ -71,50 +84,50 @@ def analyze_options(ticker):
                 oi = row['openInterest']
                 strike = row['strike']
                 opt_type = row['Type']
+                last_price = row['lastPrice']
+                change_pct = row['percentChange'] # 這是關鍵：價格漲跌幅
                 
-                # 數據清理 (有些是 NaN)
+                # 數據清理
                 vol = 0 if pd.isna(vol) else int(vol)
                 oi = 0 if pd.isna(oi) else int(oi)
+                change_pct = 0.0 if pd.isna(change_pct) else float(change_pct)
 
-                # --- 核心篩選邏輯 ---
-                # 1. 成交量必須足夠大
-                if vol < MIN_VOLUME:
-                    continue
+                # 篩選條件
+                if vol < MIN_VOLUME: continue
                 
-                # 2. Open Interest 為 0 的情況 (極端異動) 或 Vol/OI 比率達標
-                if oi == 0:
-                    ratio = 999.0 # 代表無限大
-                else:
-                    ratio = vol / oi
+                ratio = 999.0 if oi == 0 else vol / oi
 
                 if ratio >= VOL_OI_RATIO:
-                    # 計算價外程度 (OTM %)
+                    # 判斷是買還是賣
+                    action_str, sentiment_str = get_sentiment(opt_type, change_pct)
+                    
+                    # 計算價內/價外
                     if opt_type == 'CALL':
                         otm_pct = (strike - current_price) / current_price * 100
-                        direction = "bullish" if strike > current_price else "itm"
-                    else: # PUT
+                        moneyness = "OTM" if strike > current_price else "ITM"
+                    else:
                         otm_pct = (current_price - strike) / current_price * 100
-                        direction = "bearish" if strike < current_price else "itm"
+                        moneyness = "OTM" if strike < current_price else "ITM"
 
-                    # 格式化 alert
-                    emoji = "🐂" if opt_type == 'CALL' else "🐻"
-                    moneyness = "OTM" if direction != "itm" else "ITM"
-                    
+                    # 只有真的有漲跌才發送 (過濾掉價格不變的雜訊)
+                    if change_pct == 0: continue
+
+                    emoji = "🔥"
                     alert_msg = (
-                        f"{emoji} **{ticker} {opt_type}**\n"
+                        f"{sentiment_str} **{ticker} {opt_type}**\n"
                         f"Exp: {exp_date} | Strike: ${strike}\n"
                         f"📊 Vol: {vol} / OI: {oi} (x{ratio:.1f})\n"
-                        f"💰 Price: ${row['lastPrice']:.2f} ({moneyness} {otm_pct:.1f}%)\n"
+                        f"💵 Price: ${last_price:.2f} ({change_pct:+.1f}%)\n"
+                        f"🔎 Action: {action_str}\n"
+                        f"🎯 {moneyness} {abs(otm_pct):.1f}%\n"
                     )
                     alerts.append(alert_msg)
 
         if alerts:
-            header = f"🚨 **Unusual Options Activity** 🚨\nTarget: {ticker} (${current_price:.2f})\n-------------------\n"
+            header = f"{emoji} **Options Alert: {ticker}** (${current_price:.2f})\n-------------------\n"
             full_msg = header + "\n".join(alerts)
             send_telegram_msg(full_msg)
             print(f"✅ Alert sent for {ticker}")
-        else:
-            print(f"   No unusual activity found for {ticker}")
 
     except Exception as e:
         print(f"Error scanning {ticker}: {e}")
@@ -123,5 +136,4 @@ if __name__ == "__main__":
     print(f"🚀 Starting Options Scan at {datetime.now(timezone.utc)}")
     for symbol in WATCHLIST:
         analyze_options(symbol)
-        time.sleep(1) # 避免被 Yahoo 封鎖
     print("🏁 Scan Complete.")
