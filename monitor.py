@@ -18,7 +18,7 @@ TELEGRAM_TOKEN = os.environ.get('TG_TOKEN')
 CHAT_ID = os.environ.get('TG_CHAT_ID')
 
 # 配合 Cron Job 頻率 (例如每 15 分鐘跑一次，這裡設 20 分鐘作為緩衝)
-LOOKBACK_MINUTES = 20
+LOOKBACK_MINUTES = 1440
 
 # 必須遵守 SEC 的 User-Agent 格式: AppName/Version (Email)
 HEADERS = {
@@ -232,3 +232,4 @@ def check_sec_filings():
 
 if __name__ == "__main__":
     check_sec_filings()
+
