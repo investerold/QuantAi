@@ -9,11 +9,10 @@ import re
 
 # --- 配置區 ---
 WATCHLIST = {
-    'NVDA': 'NVIDIA',
+    'ZETA': 'Zeta Global',
     'ODD':  'Oddity Tech',
     'HIMS': 'Hims & Hers',
     'OSCR': 'Oscar Health',
-    'TSLA': 'Tesla',
 }
 
 TELEGRAM_TOKEN = os.environ.get('TG_TOKEN')
@@ -195,5 +194,6 @@ def check_sec_filings():
 
 if __name__ == "__main__":
     check_sec_filings()
+
 
 
