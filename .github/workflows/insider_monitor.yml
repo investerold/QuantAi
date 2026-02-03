@@ -1,29 +1,33 @@
-name: Insider Trading Monitor
+name: SEC Insider Monitor
 
 on:
   schedule:
-    - cron: '*/15 * * * *' # 每 15 分鐘
+    # 每 15 分鐘運行一次 (UTC 時間)
+    # 注意: GitHub Actions 免費版有時會有延遲，不是精確秒級
+    - cron: '*/15 * * * *'
+  # 允許手動觸發 (方便測試)
   workflow_dispatch:
 
 jobs:
-  build:
+  run-monitor:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: '3.9'
 
       - name: Install dependencies
-        # 新增 python-dateutil 用於解析時間
         run: |
-          pip install requests python-dateutil beautifulsoup4 lxml
+          pip install -r requirements.txt
 
       - name: Run Monitor Script
         env:
+          # 這裡引用 GitHub Secrets
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: python monitor.py
