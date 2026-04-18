@@ -49,10 +49,12 @@ def get_latest_news(ticker):
 
 def analyze_news_gemini(ticker, title, description):
     if not GEMINI_API_KEY:
-        return None, None
+        return "SKIP", None
 
     try:
         import google.generativeai as genai
+        import re
+
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel('gemini-1.5-flash')
 
@@ -61,34 +63,56 @@ def analyze_news_gemini(ticker, title, description):
 新聞標題：{title}
 新聞內容：{description}
 
-請判斷此新聞對投資者的重要性。
+【重要】以下類型直接輸出 SKIP，不做分析：
+- 一般分析文章、「好唔好買」類型文章
+- 無具體事件的市場評論
+- 重複舊新聞
 
-如果是雜訊（一般市場波動、無實質影響的輿論），只輸出：SKIP
+以下類型才做分析（必須有具體事件）：
+- 財報、業績預警
+- 併購、分拆
+- FDA/監管審批
+- 管理層異動（CEO/CFO）
+- 重大合約簽署
+- 競爭格局重大改變
 
-如果是重要新聞，請用以下 JSON 格式輸出（不要加 markdown code block）：
-{{
-  "impact": "利多" 或 "利空" 或 "中性",
-  "magnitude": "重大" 或 "中等" 或 "輕微",
-  "summary": "一句話中文摘要（30字內）",
-  "reason": "為何重要（20字內）"
-}}
+如果是雜訊，只輸出（不要加任何其他字）：
+SKIP
 
-重要新聞包括：財報、M&A、FDA審批、管理層異動、重大合約、競爭格局改變等。
+如果是重要新聞，只輸出以下 JSON（不要加 markdown、不要加反引號）：
+{{"impact": "利多或利空或中性", "magnitude": "重大或中等或輕微", "summary": "一句話中文摘要30字內", "reason": "為何重要20字內"}}
 """
 
         response = model.generate_content(prompt)
         text = response.text.strip()
 
+        # 清洗 markdown fences
+        text = re.sub(r'```[\w]*', '', text).strip()
+
         if "SKIP" in text:
             return "SKIP", None
 
-        # 解析 JSON
-        result = json.loads(text)
+        # 嘗試用 regex 提取 JSON block（即使有多餘文字）
+        json_match = re.search(r'\{.*?\}', text, re.DOTALL)
+        if not json_match:
+            print(f"⚠️ 無法提取 JSON，原始回應：{text[:100]}")
+            return "SKIP", None  # parse 失敗 → 靜默跳過，唔發爛訊息
+
+        result = json.loads(json_match.group())
+
+        # 驗證必要欄位
+        required = ["impact", "magnitude", "summary", "reason"]
+        if not all(k in result for k in required):
+            return "SKIP", None
+
         return "OK", result
 
+    except json.JSONDecodeError as e:
+        print(f"⚠️ JSON 解析失敗 ({ticker}): {e} | 原文: {text[:100]}")
+        return "SKIP", None  # 解析失敗靜默跳過
     except Exception as e:
-        print(f"Gemini 分析失敗: {e}")
-        return "OK", {"impact": "中性", "magnitude": "輕微", "summary": title, "reason": "分析失敗，請自行判斷"}
+        print(f"❌ Gemini 分析失敗 ({ticker}): {e}")
+        return "SKIP", None
 
 def format_message(ticker, result, url, published_at):
     # Impact emoji mapping
