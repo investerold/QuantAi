@@ -80,45 +80,34 @@ def analyze_news_gemini(ticker, title, description):
         return f"📰 {title}" # 失敗時回退到標題
 
 def start_watchdog():
-    print(f"👀 24/7 新聞看門狗 (Gemini版) 已啟動... (每 {SCAN_INTERVAL/60} 分鐘掃描一次)")
-    send_telegram_message("👀 新聞監控系統已上線！(Powered by Gemini)")
+    # 移除 while True，讓它執行一次就結束
+    print(f"[{datetime.now().strftime('%H:%M')}] 開始掃描...")
     
     seen_urls = load_history()
     
-    while True:
-        print(f"[{datetime.now().strftime('%H:%M')}] 開始新一輪掃描...")
-        
-        for ticker in WATCHLIST:
-            articles = get_latest_news(ticker)
-            
-            for article in articles:
-                url = article.get('url')
+    for ticker in WATCHLIST:
+        articles = get_latest_news(ticker)
+        for article in articles:
+            url = article.get('url')
+            if url and url not in seen_urls:
+                title = article.get('title')
+                desc = article.get('description', '')
                 
-                if url and url not in seen_urls:
-                    title = article.get('title')
-                    desc = article.get('description', '')
-                    
-                    # 使用 Gemini 分析
-                    analysis = analyze_news_gemini(ticker, title, desc)
-                    
-                    # 過濾掉 SKIP 的新聞
-                    if "SKIP" in analysis:
-                        print(f"🗑️ 過濾雜訊: {title[:20]}...")
-                        seen_urls.add(url)
-                        continue
-                        
-                    # 發送警報
-                    msg = f"**{ticker} 快訊**\n{analysis}\n[閱讀全文]({url})"
-                    send_telegram_message(msg)
-                    print(f"✅ 已推送 {ticker} 重大新聞")
-                    
+                analysis = analyze_news_gemini(ticker, title, desc)
+                
+                if "SKIP" in analysis:
+                    print(f"🗑️ 過濾雜訊: {title[:20]}...")
                     seen_urls.add(url)
+                    continue
                     
-            time.sleep(1)
+                msg = f"**{ticker} 快訊**\n{analysis}\n[閱讀全文]({url})"
+                send_telegram_message(msg)
+                print(f"✅ 已推送 {ticker} 重大新聞")
+                seen_urls.add(url)
+        time.sleep(1)
             
-        save_history(seen_urls)
-        print(f"💤 休息 {SCAN_INTERVAL} 秒...")
-        time.sleep(SCAN_INTERVAL)
+    save_history(seen_urls)
+    print("✅ 本次掃描完成，腳本正常退出。")
 
 if __name__ == "__main__":
     start_watchdog()
