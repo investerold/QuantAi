@@ -8,8 +8,8 @@ from bot import send_telegram_message
 # ================= 設定區 =================
 WATCHLIST = ['HIMS', 'ZETA', 'ODDITY', 'NVDA', 'TSLA', 'AMD', 'OSCR']
 
-NEWS_API_KEY = 'fdd4f066081e4231a20e66319d581117'
-GEMINI_API_KEY = 'AIzaSyC-vgL2fxsl45MdWxM5VTqjo3n2jjYM8IQY'
+NEWS_API_KEY = os.getenv('NEWS_API_KEY')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 SCAN_INTERVAL = 900
 # ==========================================
