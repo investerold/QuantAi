@@ -2,226 +2,173 @@ import time
 import json
 import requests
 import os
-import yfinance as yf
-import xml.etree.ElementTree as ET
-import re
 from datetime import datetime
+from bot import send_telegram_message
 
-# ================= CONFIGURATION =================
-WATCHLIST = ['HIMS', 'ZETA', 'ODD', 'NVDA', 'TSLA', 'AMD', 'OSCR']
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+# ================= 設定區 =================
+WATCHLIST = ['HIMS', 'ZETA', 'ODDITY', 'NVDA', 'TSLA', 'AMD', 'OSCR']
+
+NEWS_API_KEY = 'fdd4f066081e4231a20e66319d581117'
+GEMINI_API_KEY = 'AIzaSyC-vgL2fxsl45MdWxM5VTqjo3n2jjYM8IQY'
+
+SCAN_INTERVAL = 900
+# ==========================================
+
 HISTORY_FILE = 'news_history.json'
-
-# ✅ 改用 1.5 Flash，每日額度 (RPD) 通常是 1500 次，遠高於 2.5 Flash 的 50 次
-# 如果你堅持要用 2.5，請自行改回 "gemini-2.5-flash"，但保證會爆
-GEMINI_MODEL = "gemini-2.5-flash-lite"
-
-# 垃圾關鍵字過濾 (節省 API)
-IGNORE_KEYWORDS = [
-    "class action", "lawsuit", "investigation", "zacks", "motley fool", 
-    "shareholder rights", "loss alert", "reminder", "dividend"
-]
-
-# ================= FUNCTIONS =================
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, 'r') as f:
-                return set(json.load(f))
-        except:
-            return set()
+        with open(HISTORY_FILE, 'r') as f:
+            return set(json.load(f))
     return set()
 
 def save_history(history_set):
-    # 只保留最後 500 條記錄，避免文件過大
-    clean_history = list(history_set)[-500:] 
     with open(HISTORY_FILE, 'w') as f:
-        json.dump(clean_history, f, indent=2)
+        json.dump(list(history_set), f)
 
-def clean_html(raw_html):
-    if not raw_html: return ""
-    cleanr = re.compile('<.*?>')
-    text = re.sub(cleanr, '', raw_html)
-    return text.replace('&nbsp;', ' ').strip()
-
-def is_spam(title):
-    """檢查標題是否包含垃圾關鍵字"""
-    title_lower = title.lower()
-    for kw in IGNORE_KEYWORDS:
-        if kw in title_lower:
-            return True
-    return False
-
-def send_telegram_message(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True
+def get_latest_news(ticker):
+    if not NEWS_API_KEY:
+        return []
+    url = "https://newsapi.org/v2/everything"
+    params = {
+        'q': f'("{ticker}" AND "stock") OR ("{ticker}" AND "earnings") OR ("{ticker}" AND "revenue")',
+        'sortBy': 'publishedAt',
+        'language': 'en',
+        'pageSize': 3,
+        'apiKey': NEWS_API_KEY
     }
     try:
-        requests.post(url, json=payload, timeout=10)
-    except Exception as e:
-        print(f"Telegram Error: {e}")
-
-def get_google_rss_news(ticker):
-    print(f"   📡 Fetching Google RSS for {ticker}...")
-    try:
-        url = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, headers=headers, timeout=10)
-        
-        if resp.status_code != 200: return []
-            
-        root = ET.fromstring(resp.content)
-        items = []
-        for item in root.findall('.//item')[:4]:  # 取前 4 條
-            title = item.find('title').text
-            link = item.find('link').text
-            
-            if title and link and not is_spam(title):
-                items.append({
-                    'title': title, 
-                    'link': link, 
-                    'source': 'GoogleRSS'
-                })
-        return items
-    except Exception as e:
-        print(f"   ❌ RSS Failed: {e}")
-        return []
-
-def get_yfinance_news(ticker):
-    print(f"   ⚠️ RSS Empty, trying yfinance for {ticker}...")
-    try:
-        stock = yf.Ticker(ticker)
-        news = stock.news
-        formatted_news = []
-        for item in news[:3]: 
-            title = item.get('title')
-            link = item.get('link') or item.get('url')
-            if title and link and not is_spam(title):
-                formatted_news.append({
-                    'title': title,
-                    'link': link,
-                    'source': 'Yahoo'
-                })
-        return formatted_news
-    except:
-        return []
-
-def call_gemini_batch(ticker, news_items):
-    """
-    批次處理：將該股票的所有新新聞打包成一個 Prompt 發送。
-    節省 API Call 次數 (N -> 1)。
-    """
-    if not GEMINI_API_KEY: return None
-
-    # 構建 Prompt
-    news_text = ""
-    for idx, item in enumerate(news_items, 1):
-        news_text += f"{idx}. {item['title']} (Link: {item['link']})\n"
-
-    prompt = f"""
-    Role: Senior Stock Analyst (Peter Lynch Style).
-    Ticker: {ticker}
-    
-    Here are the latest news headlines:
-    {news_text}
-    
-    Task:
-    1. Analyze the aggregate sentiment (Bullish 🟢 / Bearish 🔴 / Neutral ⚪).
-    2. Summarize the MOST critical impact in 1-2 bullet points.
-    3. Ignore repetitive noise.
-    
-    Output Format:
-    [Sentiment Icon] {ticker} Update
-    • [Summary of key event]
-    """
-    
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    
-    try:
-        response = requests.post(api_url, json=payload, headers={'Content-Type': 'application/json'}, timeout=20)
-        
+        response = requests.get(url, params=params)
+        data = response.json()
         if response.status_code == 200:
-            return response.json()['candidates'][0]['content']['parts'][0]['text'].strip()
-        elif response.status_code == 429:
-            print(f"      ⚠️ Quota Limit (429).")
-            return "SKIP_QUOTA"
-        else:
-            print(f"      ❌ API Error {response.status_code}: {response.text}")
-            return None
+            return data.get('articles', [])
+        return []
     except Exception as e:
-        print(f"      ❌ Connection Error: {e}")
-        return None
+        print(f"❌ 抓取 {ticker} 失敗: {e}")
+        return []
 
-def main():
-    print(f"[{datetime.now()}] Starting Watchdog v9.0 (Batch Mode + 1.5 Flash)...")
-    
-    history = load_history()
-    print(f"Loaded {len(history)} history items.")
-    
-    new_alerts = 0
-    
-    for ticker in WATCHLIST:
-        print(f"--------------------------------------------------")
-        print(f"Checking {ticker}...", end=" ")
-        
-        # 1. 獲取新聞
-        raw_news = get_google_rss_news(ticker)
-        if not raw_news:
-            raw_news = get_yfinance_news(ticker)
-            
-        # 2. 過濾已讀新聞
-        fresh_news = []
-        for item in raw_news:
-            clean_url = item.get('link').split('?')[0]
-            if clean_url not in history:
-                fresh_news.append(item)
-        
-        print(f"Found {len(fresh_news)} NEW items.")
-        
-        if not fresh_news:
-            continue
+def analyze_news_gemini(ticker, title, description):
+    if not GEMINI_API_KEY:
+        return None, None
 
-        # 3. 批次分析 (Batch Analysis)
-        # 只取前 3 條最新的來分析，避免 Token 過長
-        target_news = fresh_news[:3]
-        
-        print(f"   -> Batch analyzing {len(target_news)} items...")
-        analysis = call_gemini_batch(ticker, target_news)
-        
-        if analysis == "SKIP_QUOTA":
-            print("      ⚠️ Quota hit, stopping batch.")
-            break
-            
-        if analysis:
-            # 構建消息：AI 分析 + 來源鏈接
-            links_md = "\n".join([f"[Source {i+1}]({n['link']})" for i, n in enumerate(target_news)])
-            msg = f"{analysis}\n\n{links_md}"
-            
-            send_telegram_message(msg)
-            new_alerts += 1
-            
-            # 更新歷史
-            for item in target_news:
-                history.add(item.get('link').split('?')[0])
-                
-            # 冷卻時間：雖然用了 Batch，還是休息 5 秒比較保險
-            time.sleep(5)
-        else:
-            print("      ❌ AI Analysis Failed")
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
 
-    save_history(history)
-    print(f"--------------------------------------------------")
-    print(f"Done. Sent {new_alerts} alerts.")
+        prompt = f"""
+你是一個專業股票分析師，請分析以下關於 {ticker} 的新聞。
+新聞標題：{title}
+新聞內容：{description}
+
+請判斷此新聞對投資者的重要性。
+
+如果是雜訊（一般市場波動、無實質影響的輿論），只輸出：SKIP
+
+如果是重要新聞，請用以下 JSON 格式輸出（不要加 markdown code block）：
+{{
+  "impact": "利多" 或 "利空" 或 "中性",
+  "magnitude": "重大" 或 "中等" 或 "輕微",
+  "summary": "一句話中文摘要（30字內）",
+  "reason": "為何重要（20字內）"
+}}
+
+重要新聞包括：財報、M&A、FDA審批、管理層異動、重大合約、競爭格局改變等。
+"""
+
+        response = model.generate_content(prompt)
+        text = response.text.strip()
+
+        if "SKIP" in text:
+            return "SKIP", None
+
+        # 解析 JSON
+        result = json.loads(text)
+        return "OK", result
+
+    except Exception as e:
+        print(f"Gemini 分析失敗: {e}")
+        return "OK", {"impact": "中性", "magnitude": "輕微", "summary": title, "reason": "分析失敗，請自行判斷"}
+
+def format_message(ticker, result, url, published_at):
+    # Impact emoji mapping
+    impact_emoji = {
+        "利多": "📈",
+        "利空": "📉",
+        "中性": "➡️"
+    }
+    magnitude_emoji = {
+        "重大": "🚨🚨🚨",
+        "中等": "⚠️⚠️",
+        "輕微": "ℹ️"
+    }
+    impact_bar = {
+        "重大": "█████",
+        "中等": "███░░",
+        "輕微": "█░░░░"
+    }
+
+    ie = impact_emoji.get(result['impact'], "➡️")
+    me = magnitude_emoji.get(result['magnitude'], "ℹ️")
+    bar = impact_bar.get(result['magnitude'], "█░░░░")
+
+    # 格式化發布時間
+    try:
+        dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ")
+        time_str = dt.strftime("%m/%d %H:%M UTC")
+    except:
+        time_str = "剛剛"
+
+    msg = (
+        f"{me} *{ticker}* 重要快訊\n"
+        f"{'─' * 22}\n"
+        f"{ie} 方向：*{result['impact']}*　|　影響：*{result['magnitude']}*\n"
+        f"強度：{bar}\n"
+        f"{'─' * 22}\n"
+        f"📋 *{result['summary']}*\n"
+        f"💡 重要原因：{result['reason']}\n"
+        f"{'─' * 22}\n"
+        f"🕐 {time_str}\n"
+        f"[📎 閱讀原文]({url})"
+    )
+    return msg
+
+def start_watchdog():
+    print(f"👀 新聞看門狗已啟動... (每 {SCAN_INTERVAL//60} 分鐘掃描一次)")
+    send_telegram_message("👀 *新聞監控系統已上線！*\n監控中：" + " | ".join(WATCHLIST))
+
+    seen_urls = load_history()
+
+    while True:
+        print(f"[{datetime.now().strftime('%H:%M')}] 開始新一輪掃描...")
+
+        for ticker in WATCHLIST:
+            articles = get_latest_news(ticker)
+
+            for article in articles:
+                url = article.get('url')
+                if not url or url in seen_urls:
+                    continue
+
+                title = article.get('title', '')
+                desc = article.get('description', '')
+                published_at = article.get('publishedAt', '')
+
+                status, result = analyze_news_gemini(ticker, title, desc)
+
+                if status == "SKIP":
+                    print(f"🗑️ 過濾雜訊: {title[:30]}...")
+                elif status == "OK" and result:
+                    msg = format_message(ticker, result, url, published_at)
+                    send_telegram_message(msg)
+                    print(f"✅ 已推送 {ticker}｜{result['impact']}｜{result['magnitude']}")
+
+                seen_urls.add(url)
+                time.sleep(1)
+
+        save_history(seen_urls)
+        print(f"💤 休息 {SCAN_INTERVAL} 秒...")
+        time.sleep(SCAN_INTERVAL)
 
 if __name__ == "__main__":
-    main()
+    start_watchdog()
