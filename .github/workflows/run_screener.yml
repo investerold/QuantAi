@@ -1,0 +1,31 @@
+name: Stock Screener Bot
+
+on:
+  schedule:
+    # 這裡設定執行時間 (UTC 時間)。例如美股收盤後 (週二至週六 09:00 UTC = 17:00 香港時間)
+    - cron: '0 9 * * 2-6'
+  workflow_dispatch: # 允許你手動點擊按鈕執行
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run Screener
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: python screen_stocks.py
