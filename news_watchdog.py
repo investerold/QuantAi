@@ -1,3 +1,16 @@
+
+import time
+import json
+import requests
+import os
+from datetime import datetime
+from bot import send_telegram_message
+
+# ================= 設定區 =================
+WATCHLIST = ['HIMS', 'ZETA', 'ODDITY', 'NVDA', 'TSLA', 'AMD', 'OSCR']
+# ... (以下保留原本 v3 版本的代碼不變)
+
+
 import time
 import json
 import requests
@@ -9,8 +22,9 @@ from bot import send_telegram_message
 WATCHLIST = ['HIMS', 'ZETA', 'ODDITY', 'NVDA', 'TSLA', 'AMD', 'OSCR']
 
 # 你的 API Keys
-NEWS_API_KEY = 'NEWS_API_KEY'  # 保持不變
-GEMINI_API_KEY = 'GEMINI_API_KEY
+NEWS_API_KEY = 'NEWS_API_KEY'  
+# 這是你的新 Gemini Key
+GEMINI_API_KEY = 'GEMINI_API_KEY'
 
 # 新聞掃描間隔 (避免觸發 News API 的 Rate Limit，建議最少保持 15 分鐘 / 900 秒)
 SCAN_INTERVAL = 900 
@@ -58,20 +72,18 @@ def get_latest_news(ticker):
 
 def analyze_news_gemini(ticker, title, description):
     """ 
-    使用 Google Gemini 1.5 Flash 免費版進行投資分析 
-    (1.5 Flash 免費額度: 15 RPM, 1,500 RPD)
+    使用最新版本的 Google Gemini 2.0 Flash 進行投資分析
+    注意：已遷移至全新的 google.genai SDK
     """
-    if not GEMINI_API_KEY:
-        return f"📰 {title}" 
+    if not GEMINI_API_KEY or GEMINI_API_KEY == '在此填入你的新_API_KEY':
+        return "SKIP"
 
     try:
-        import google.generativeai as genai
-        from google.api_core import retry
+        # 新版 SDK 的引入方式
+        from google import genai
         
-        # 配置 API
-        genai.configure(api_key=GEMINI_API_KEY)
-        # 使用 Gemini 1.5 Flash，享有 15 RPM 的免費額度
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # 配置 API - 新版寫法使用 Client() 初始化
+        client = genai.Client(api_key=GEMINI_API_KEY)
         
         prompt = f"""
         請以彼得·林區 (Peter Lynch) 結合 GARP (合理價格成長) 的投資哲學，分析以下 {ticker} 的新聞：
@@ -86,17 +98,23 @@ def analyze_news_gemini(ticker, title, description):
         請用繁體中文回答。
         """
         
-        # 添加重試機制以應對 API 偶發不穩
-        response = model.generate_content(prompt, request_options={'retry': retry.Retry()})
+        # 新版 SDK 的請求寫法
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt,
+        )
+        
         return response.text.strip()
         
     except Exception as e:
-        print(f"⚠️ [Gemini API] 分析失敗: {e}")
-        return f"📰 {title}" # 失敗時回退到標題
+        error_msg = f"⚠️ [Gemini API] 分析失敗: {e}"
+        print(error_msg)
+        
+        # 發生錯誤時回傳 SKIP，避免推送未分析的雜訊
+        return "SKIP"
 
 def format_telegram_message(ticker, analysis, url):
     """ 格式化 Telegram 訊息，優化 UI 與可讀性 """
-    # 根據不同情況設定 Emoji
     if "財報" in analysis or "earnings" in analysis.lower():
         emoji = "📊"
     elif "併購" in analysis or "收購" in analysis:
@@ -114,18 +132,15 @@ def format_telegram_message(ticker, analysis, url):
     return msg
 
 def start_watchdog():
-    print(f"👀 24/7 新聞看門狗 (Gemini 1.5 Flash 版) 已啟動...")
+    print(f"👀 24/7 新聞看門狗 (Gemini 2.0 Flash / 新版 SDK) 已啟動...")
     print(f"⏱️ 掃描間隔: 每 {SCAN_INTERVAL/60:.1f} 分鐘")
-    print(f"🎯 監控標的: {', '.join(WATCHLIST)}")
     
-    send_telegram_message("🟢 *系統通知*\n24/7 新聞監控系統已上線！(Powered by Gemini 1.5 Flash)")
+    send_telegram_message("🟢 *系統通知*\n24/7 新聞監控系統已上線！(Powered by Google GenAI SDK)")
     
     seen_urls = load_history()
     
     while True:
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🔄 開始新一輪掃描...")
-        
-        # 計算此輪 API 呼叫次數以防超出 Gemini RPM (15次/分鐘)
         api_calls_this_minute = 0 
         
         for ticker in WATCHLIST:
@@ -138,30 +153,25 @@ def start_watchdog():
                     title = article.get('title')
                     desc = article.get('description', '')
                     
-                    # 控管 Gemini Rate Limit (15 RPM)
                     if api_calls_this_minute >= 14:
                         print("⏳ 接近 Gemini API 每分鐘限制 (15次)，暫停 60 秒...")
                         time.sleep(60)
                         api_calls_this_minute = 0
                         
-                    # 使用 Gemini 分析
                     analysis = analyze_news_gemini(ticker, title, desc)
                     api_calls_this_minute += 1
                     
-                    # 過濾掉 SKIP 的新聞
                     if "SKIP" in analysis:
                         print(f"🗑️ 過濾雜訊: {ticker} - {title[:25]}...")
                         seen_urls.add(url)
                         continue
                         
-                    # 發送警報
                     msg = format_telegram_message(ticker, analysis, url)
                     send_telegram_message(msg)
                     print(f"✅ 已推送 {ticker} 重大新聞！")
                     
                     seen_urls.add(url)
                     
-            # 避免 News API 請求過快
             time.sleep(2)
             
         save_history(seen_urls)
