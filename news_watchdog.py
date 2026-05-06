@@ -132,51 +132,41 @@ def format_telegram_message(ticker, analysis, url):
     return msg
 
 def start_watchdog():
-    print(f"👀 24/7 新聞看門狗 (Gemini 2.0 Flash / 新版 SDK) 已啟動...")
-    print(f"⏱️ 掃描間隔: 每 {SCAN_INTERVAL/60:.1f} 分鐘")
-    
-    send_telegram_message("🟢 *系統通知*\n24/7 新聞監控系統已上線！(Powered by Google GenAI SDK)")
+    print(f"👀 新聞看門狗 (GitHub Actions 版) 開始執行單次掃描...")
     
     seen_urls = load_history()
     
-    while True:
-        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🔄 開始新一輪掃描...")
-        api_calls_this_minute = 0 
+    for ticker in WATCHLIST:
+        articles = get_latest_news(ticker)
         
-        for ticker in WATCHLIST:
-            articles = get_latest_news(ticker)
+        for article in articles:
+            url = article.get('url')
             
-            for article in articles:
-                url = article.get('url')
+            if url and url not in seen_urls:
+                title = article.get('title')
+                desc = article.get('description', '')
+                    
+                analysis = analyze_news_gemini(ticker, title, desc)
                 
-                if url and url not in seen_urls:
-                    title = article.get('title')
-                    desc = article.get('description', '')
-                    
-                    if api_calls_this_minute >= 14:
-                        print("⏳ 接近 Gemini API 每分鐘限制 (15次)，暫停 60 秒...")
-                        time.sleep(60)
-                        api_calls_this_minute = 0
-                        
-                    analysis = analyze_news_gemini(ticker, title, desc)
-                    api_calls_this_minute += 1
-                    
-                    if "SKIP" in analysis:
-                        print(f"🗑️ 過濾雜訊: {ticker} - {title[:25]}...")
-                        seen_urls.add(url)
-                        continue
-                        
-                    msg = format_telegram_message(ticker, analysis, url)
-                    send_telegram_message(msg)
-                    print(f"✅ 已推送 {ticker} 重大新聞！")
-                    
+                if "SKIP" in analysis:
+                    print(f"🗑️ 過濾雜訊: {ticker} - {title[:25]}...")
                     seen_urls.add(url)
+                    continue
                     
-            time.sleep(2)
-            
-        save_history(seen_urls)
-        print(f"💤 掃描完成。休息 {SCAN_INTERVAL} 秒...")
-        time.sleep(SCAN_INTERVAL)
+                msg = format_telegram_message(ticker, analysis, url)
+                send_telegram_message(msg)
+                print(f"✅ 已推送 {ticker} 重大新聞！")
+                
+                seen_urls.add(url)
+                
+        # 避免 API 請求過快
+        time.sleep(2)
+        
+    save_history(seen_urls)
+    print("🏁 單次掃描完成，程式結束。")
+
+if __name__ == "__main__":
+    start_watchdog()
 
 if __name__ == "__main__":
     try:
