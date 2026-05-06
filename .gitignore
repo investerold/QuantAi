@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 .DS_Store
+news_history.json
+.venv/
+__pycache__/
