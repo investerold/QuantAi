@@ -22,9 +22,9 @@ from bot import send_telegram_message
 WATCHLIST = ['HIMS', 'ZETA', 'ODDITY', 'NVDA', 'TSLA', 'AMD', 'OSCR']
 
 # 你的 API Keys
-NEWS_API_KEY = 'NEWS_API_KEY'  
+NEWS_API_KEY = os.getenv('NEWS_API_KEY')  
 # 這是你的新 Gemini Key
-GEMINI_API_KEY = 'GEMINI_API_KEY'
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 # 新聞掃描間隔 (避免觸發 News API 的 Rate Limit，建議最少保持 15 分鐘 / 900 秒)
 SCAN_INTERVAL = 900 
