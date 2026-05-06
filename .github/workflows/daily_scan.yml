@@ -2,8 +2,7 @@ name: Market Watchdog (Batch Optimized)
 
 on:
   schedule:
-    # ✅ 改為每 2 小時運行一次 (例如 00:00, 02:00...)
-    # 這樣可以大幅減少 API 消耗，且對於長線/Swing交易足夠即時
+    # 每 2 小時運行一次
     - cron: '0 */2 * * *'
   workflow_dispatch: # 手動觸發按鈕
 
@@ -24,10 +23,13 @@ jobs:
         python-version: '3.11'
         
     - name: Install Dependencies
-      run: pip install requests yfinance
+      # ✅ 加入 google-genai 確保腳本能呼叫 Gemini
+      run: pip install requests yfinance google-genai google-api-core
 
     - name: Run Watchdog Script
       env:
+        # ✅ 補上 NEWS_API_KEY
+        NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
