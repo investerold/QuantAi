@@ -167,10 +167,3 @@ def start_watchdog():
 
 if __name__ == "__main__":
     start_watchdog()
-
-if __name__ == "__main__":
-    try:
-        start_watchdog()
-    except KeyboardInterrupt:
-        print("\n🛑 系統已手動停止。")
-        send_telegram_message("🔴 *系統通知*\n新聞監控系統已停止。")
