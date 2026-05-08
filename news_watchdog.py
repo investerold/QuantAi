@@ -6,27 +6,19 @@ from datetime import datetime
 from bot import send_telegram_message
 
 # ================= 設定區 =================
-WATCHLIST = ['HIMS', 'ZETA', 'ODDITY', 'NVDA', 'TSLA', 'AMD', 'OSCR']
-# ... (以下保留原本 v3 版本的代碼不變)
+WATCHLIST = {
+    "HIMS": ['"Hims & Hers"', '"HIMS"'],
+    "ZETA": ['"Zeta Global"', '"ZETA"'],
+    "ODDITY": ['"Oddity Tech"', '"ODD"'],
+    "NVDA": ['"NVIDIA"', '"NVDA"'],
+    "TSLA": ['"Tesla"', '"TSLA"'],
+    "AMD": ['"Advanced Micro Devices"', '"AMD"'],
+    "OSCR": ['"Oscar Health"', '"OSCR"']
+}
 
-
-import time
-import json
-import requests
-import os
-from datetime import datetime
-from bot import send_telegram_message
-
-# ================= 設定區 =================
-WATCHLIST = ['HIMS', 'ZETA', 'ODDITY', 'NVDA', 'TSLA', 'AMD', 'OSCR']
-
-# 你的 API Keys
-NEWS_API_KEY = os.getenv('NEWS_API_KEY')  
-# 這是你的新 Gemini Key
+NEWS_API_KEY = os.getenv('NEWS_API_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-
-# 新聞掃描間隔 (避免觸發 News API 的 Rate Limit，建議最少保持 15 分鐘 / 900 秒)
-# ==========================================
+GEMINI_MODEL = 'gemini-2.5-flash-lite'
 
 HISTORY_FILE = 'news_history.json'
 
@@ -40,19 +32,19 @@ def save_history(history_set):
     with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
         json.dump(list(history_set), f, ensure_ascii=False, indent=4)
 
-def get_latest_news(ticker):
-    """
-    抓取特定股票的最新新聞，過濾較舊或不相關內容
-    """
+def get_latest_news(ticker, aliases):
     if not NEWS_API_KEY:
         return []
     
+    # 放寬條件：只要有提到公司名或 Ticker 就抓取（不做嚴格事件過濾）
+    query_string = " OR ".join(aliases)
+    
     url = "https://newsapi.org/v2/everything"
     params = {
-        'q': f'("{ticker}" AND "stock") OR ("{ticker}" AND "earnings") OR ("{ticker}" AND "revenue")',
+        'q': query_string,
         'sortBy': 'publishedAt',
         'language': 'en',
-        'pageSize': 3,
+        'pageSize': 3,  # 每個標的最多抓取最新 3 條，避免 API 或 Token 超載
         'apiKey': NEWS_API_KEY
     }
     
@@ -61,106 +53,125 @@ def get_latest_news(ticker):
         data = response.json()
         if response.status_code == 200:
             return data.get('articles', [])
+        
+        if response.status_code == 429:
+            print("❌ [News API] 配額已耗盡，請檢查方案。")
         else:
             print(f"❌ [News API] 抓取 {ticker} 失敗: {data.get('message', '未知錯誤')}")
-            return []
+        return []
     except requests.exceptions.RequestException as e:
         print(f"❌ [網絡錯誤] 抓取 {ticker} 失敗: {e}")
         return []
 
 def analyze_news_gemini(ticker, title, description):
-    """ 
-    使用最新版本的 Google Gemini 2.5 Flash 進行投資分析
-    注意：已遷移至全新的 google.genai SDK
-    """
-    if not GEMINI_API_KEY or GEMINI_API_KEY == '在此填入你的新_API_KEY':
+    if not GEMINI_API_KEY：
+        print("⚠️ [系統] 未偵測到 GEMINI_API_KEY，跳過分析。")
         return "SKIP"
 
     try:
-        # 新版 SDK 的引入方式
         from google import genai
-        
-        # 配置 API - 新版寫法使用 Client() 初始化
+    except ImportError:
+        print("⚠️ 請先安裝: pip install google-genai")
+        return "SKIP"
+
+    # 放寬 Prompt，只要對公司營運、護城河有影響就納入，不限於重大突發
+    prompt = f"""
+    你是專注於 GARP 策略 (彼得·林區風格) 與期權賣方策略的金融分析師。
+    請分析以下 {ticker} 的新聞：
+    標題：{title} 
+    摘要：{description}
+    
+    任務：
+    1. 判斷此新聞是否包含「值得關注的商業發展」(例如：新產品發佈、業務擴張、高管變動、財報預期、合作案等有助於判斷護城河與波動率的資訊)。
+    2. 如果「有」，用 1-2 句繁體中文精確總結，並以前綴 "💡 [市場動態]" 開頭。(若涉及財報/併購等極端重大事件，請用 "🚨 [核心觸發]" 開頭)
+    3. 如果「完全無關」(例如純粹的無理由股價波動、與公司業務無關的雜訊、產品推銷廣告)，才輸出 "SKIP"。
+    """
+
+    try:
         client = genai.Client(api_key=GEMINI_API_KEY)
-        
-        prompt = f"""
-        請以彼得·林區 (Peter Lynch) 結合 GARP (合理價格成長) 的投資哲學，分析以下 {ticker} 的新聞：
-        新聞標題：{title} 
-        新聞摘要：{description}
-        
-        任務：
-        1. 判斷此新聞是否對投資基本面有「重大影響」(如：財報超預期、重大併購、護城河改變等)。
-        2. 如果「有重大影響」(YES)：請用 1-2 句話精確總結影響，並加上 "🚨 [核心觸發]"。
-        3. 如果「沒有重大影響」(NO)：包含市場噪音、小道消息、日常股價波動等，請只輸出 "SKIP"。
-        
-        請用繁體中文回答。
-        """
-        
-        # 新版 SDK 的請求寫法
         response = client.models.generate_content(
-            model='gemini-2.5-flash-lite',
+            model=GEMINI_MODEL,
             contents=prompt,
         )
-        
         return response.text.strip()
         
     except Exception as e:
-        error_msg = f"⚠️ [Gemini API] 分析失敗: {e}"
-        print(error_msg)
-        
-        # 發生錯誤時回傳 SKIP，避免推送未分析的雜訊
+        error_msg = str(e)
+        if "429" in error_msg:
+            print(f"⏳ [Gemini API] 觸發限制，等待後重試...")
+            time.sleep(3)
+        else:
+            print(f"⚠️ [Gemini API] 分析失敗: {error_msg}")
         return "SKIP"
 
 def format_telegram_message(ticker, analysis, url):
-    """ 格式化 Telegram 訊息，優化 UI 與可讀性 """
-    if "財報" in analysis or "earnings" in analysis.lower():
+    if "🚨" in analysis:
+        emoji = "🚨"
+    elif "財報" in analysis or "earnings" in analysis.lower():
         emoji = "📊"
-    elif "併購" in analysis or "收購" in analysis:
+    elif "併購" in analysis or "合作" in analysis:
         emoji = "🤝"
     else:
-        emoji = "⚡"
+        emoji = "💡"
         
-    msg = (
-        f"*{emoji} {ticker} 投資快訊*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"{analysis}\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"🔗 [點擊閱讀完整報導]({url})"
+    return (
+        f"*{emoji} {ticker} 投資快訊*\\n"
+        f"━━━━━━━━━━━━━━━\\n"
+        f"{analysis}\\n"
+        f"━━━━━━━━━━━━━━━\\n"
+        f"🔗 [點擊閱讀]({url})"
     )
-    return msg
 
 def start_watchdog():
-    print(f"👀 新聞看門狗 (GitHub Actions 版) 開始執行單次掃描...")
-    
+    print(f"👀 新聞看門狗開始執行掃描...")
     seen_urls = load_history()
     
-    for ticker in WATCHLIST:
-        articles = get_latest_news(ticker)
+    # 用來記錄哪些標的「真的有推送新聞」，哪些「沒有更新」
+    tickers_with_updates = set()
+    
+    for ticker, aliases in WATCHLIST.items():
+        articles = get_latest_news(ticker, aliases)
         
         for article in articles:
             url = article.get('url')
+            if not url or url in seen_urls:
+                continue
+
+            title = article.get('title') or ''
+            desc = article.get('description', '') or ''
             
-            if url and url not in seen_urls:
-                title = article.get('title')
-                desc = article.get('description', '')
-                    
-                analysis = analyze_news_gemini(ticker, title, desc)
-                
-                if "SKIP" in analysis:
-                    print(f"🗑️ 過濾雜訊: {ticker} - {title[:25]}...")
-                    seen_urls.add(url)
-                    continue
-                    
-                msg = format_telegram_message(ticker, analysis, url)
-                send_telegram_message(msg)
-                print(f"✅ 已推送 {ticker} 重大新聞！")
-                
+            analysis = analyze_news_gemini(ticker, title, desc)
+            
+            if analysis == "SKIP" or "SKIP" in analysis.upper():
+                print(f"🗑️ 過濾雜訊: {ticker} - {title[:25]}...")
                 seen_urls.add(url)
+                continue
                 
-        # 避免 API 請求過快
-        time.sleep(2)
+            msg = format_telegram_message(ticker, analysis, url)
+            send_telegram_message(msg)
+            print(f"✅ 已推送 {ticker} 新聞！")
+            
+            seen_urls.add(url)
+            tickers_with_updates.add(ticker)
+                
+        time.sleep(3)
         
     save_history(seen_urls)
+    
+    # ==== 掃描結束：總結「無新聞」名單（Heartbeat） ====
+    all_tickers = set(WATCHLIST.keys())
+    no_update_tickers = all_tickers - tickers_with_updates
+    
+    if no_update_tickers:
+        no_news_msg = (
+            f"📭 *掃描完成：本日以下標的無新動態*\\n"
+            f"━━━━━━━━━━━━━━━\\n"
+            f"{', '.join(sorted(no_update_tickers))}\\n"
+            f"*(系統正常運作中，未發現上述股票的相關新聞)*"
+        )
+        send_telegram_message(no_news_msg)
+        print("✅ 已推送無更新名單總結")
+
     print("🏁 單次掃描完成，程式結束。")
 
 if __name__ == "__main__":
