@@ -15,11 +15,16 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 # 可由 GitHub Actions secrets/env 覆蓋,毋須改 code
 # 預設使用 Gemini 2.5 Flash-Lite(平 + 快 + 配額較鬆)
-GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash-lite')
+# 注意:GitHub Actions 會將未設定嘅 ${{ vars.X }} 帶成空字串,所以唔可以淨係靠 os.getenv 嘅 default
+def _env_or(name, default):
+    val = os.getenv(name)
+    return val if val else default
+
+GEMINI_MODEL = _env_or('GEMINI_MODEL', 'gemini-2.5-flash-lite')
 # 'auto' = 試 Gemini,失敗就 fallback;'rules' = 完全唔用 Gemini;'gemini' = 強制只用 Gemini
-ANALYSIS_MODE = os.getenv('ANALYSIS_MODE', 'auto').lower()
+ANALYSIS_MODE = _env_or('ANALYSIS_MODE', 'auto').lower()
 # 配額耗盡時是否照樣推送 fallback 結果(預設 false,只記錄唔 spam)
-NOTIFY_ON_FALLBACK = os.getenv('NOTIFY_ON_FALLBACK', 'false').lower() == 'true'
+NOTIFY_ON_FALLBACK = _env_or('NOTIFY_ON_FALLBACK', 'false').lower() == 'true'
 # 配額耗盡時 send 一次 admin 通知
 QUOTA_ADMIN_NOTIFIED_FLAG = '/tmp/.gemini_quota_notified'
 
