@@ -26,7 +26,6 @@ NEWS_API_KEY = os.getenv('NEWS_API_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 # 新聞掃描間隔 (避免觸發 News API 的 Rate Limit，建議最少保持 15 分鐘 / 900 秒)
-SCAN_INTERVAL = 900 
 # ==========================================
 
 HISTORY_FILE = 'news_history.json'
@@ -71,7 +70,7 @@ def get_latest_news(ticker):
 
 def analyze_news_gemini(ticker, title, description):
     """ 
-    使用最新版本的 Google Gemini 2.0 Flash 進行投資分析
+    使用最新版本的 Google Gemini 2.5 Flash 進行投資分析
     注意：已遷移至全新的 google.genai SDK
     """
     if not GEMINI_API_KEY or GEMINI_API_KEY == '在此填入你的新_API_KEY':
@@ -99,7 +98,7 @@ def analyze_news_gemini(ticker, title, description):
         
         # 新版 SDK 的請求寫法
         response = client.models.generate_content(
-            model='gemini-2.5-lite',
+            model='gemini-2.5-flash-lite',
             contents=prompt,
         )
         
