@@ -1,4 +1,3 @@
-
 import time
 import json
 import requests
@@ -100,7 +99,7 @@ def analyze_news_gemini(ticker, title, description):
         
         # 新版 SDK 的請求寫法
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-2.5-lite',
             contents=prompt,
         )
         
