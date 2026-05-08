@@ -14,7 +14,8 @@ NEWS_API_KEY = os.getenv('NEWS_API_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 # 可由 GitHub Actions secrets/env 覆蓋,毋須改 code
-GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')
+# 預設使用 Gemini 2.5 Flash-Lite(平 + 快 + 配額較鬆)
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash-lite')
 # 'auto' = 試 Gemini,失敗就 fallback;'rules' = 完全唔用 Gemini;'gemini' = 強制只用 Gemini
 ANALYSIS_MODE = os.getenv('ANALYSIS_MODE', 'auto').lower()
 # 配額耗盡時是否照樣推送 fallback 結果(預設 false,只記錄唔 spam)
@@ -257,7 +258,8 @@ def _notify_admin_once_about_quota(reason):
         f"Gemini 不可用,本次掃描已切換到規則引擎 fallback。\n\n"
         f"原因:`{reason[:300]}`\n\n"
         "建議:檢查 Google AI Studio 配額/帳單,或將 `GEMINI_MODEL` env "
-        "改為其他模型(例如 `gemini-1.5-flash`),或將 `ANALYSIS_MODE` 設為 `rules`。"
+        "改為其他模型(例如 `gemini-2.5-flash` 或 `gemini-2.0-flash`),"
+        "或將 `ANALYSIS_MODE` 設為 `rules`。"
     )
     try:
         send_telegram_message(msg)

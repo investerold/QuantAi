@@ -34,6 +34,8 @@ jobs:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         # 可選:覆寫 Gemini 模型 / 分析模式 / 是否推送 fallback 結果
+        # 預設用 gemini-2.5-flash-lite (見 news_watchdog.py);如要改例如 gemini-2.5-flash,
+        # 可於 repo Settings → Variables 加 GEMINI_MODEL。
         GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
         ANALYSIS_MODE: ${{ vars.ANALYSIS_MODE }}
         NOTIFY_ON_FALLBACK: ${{ vars.NOTIFY_ON_FALLBACK }}
