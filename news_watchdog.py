@@ -63,6 +63,8 @@ def get_latest_news(ticker, aliases):
         print(f"❌ [網絡錯誤] 抓取 {ticker} 失敗: {e}")
         return []
 
+# 主程式 (news_watchdog.py) 中的這兩個函數替換掉：
+
 def analyze_news_gemini(ticker, title, description):
     if not GEMINI_API_KEY:
         print("⚠️ [系統] 未偵測到 GEMINI_API_KEY，跳過分析。")
@@ -74,7 +76,6 @@ def analyze_news_gemini(ticker, title, description):
         print("⚠️ 請先安裝: pip install google-genai")
         return "SKIP"
 
-    # 放寬 Prompt，只要對公司營運、護城河有影響就納入，不限於重大突發
     prompt = f"""
     你是專注於 GARP 策略 (彼得·林區風格) 與期權賣方策略的金融分析師。
     請分析以下 {ticker} 的新聞：
@@ -82,9 +83,11 @@ def analyze_news_gemini(ticker, title, description):
     摘要：{description}
     
     任務：
-    1. 判斷此新聞是否包含「值得關注的商業發展」(例如：新產品發佈、業務擴張、高管變動、財報預期、合作案等有助於判斷護城河與波動率的資訊)。
-    2. 如果「有」，用 1-2 句繁體中文精確總結，並以前綴 "💡 [市場動態]" 開頭。(若涉及財報/併購等極端重大事件，請用 "🚨 [核心觸發]" 開頭)
-    3. 如果「完全無關」(例如純粹的無理由股價波動、與公司業務無關的雜訊、產品推銷廣告)，才輸出 "SKIP"。
+    1. 判斷此新聞是否包含「值得關注的商業發展」或「基本面變化」。
+    2. 如果「有」，請嚴格按照以下格式回覆（請勿加上任何 Markdown 符號或 Markdown 代碼塊）：
+       [情緒] (請填寫：🟢利好 / 🔴利空 / ⚪中性)
+       [總結] (用 1-2 句繁體中文精確總結，並點出對公司護城河或波動率的潛在影響)
+    3. 如果「完全無關」(例如純粹市場雜訊、廣告)，請直接輸出 "SKIP"。
     """
 
     try:
@@ -105,22 +108,40 @@ def analyze_news_gemini(ticker, title, description):
         return "SKIP"
 
 def format_telegram_message(ticker, analysis, url):
-    if "🚨" in analysis:
-        emoji = "🚨"
-    elif "財報" in analysis or "earnings" in analysis.lower():
-        emoji = "📊"
-    elif "併購" in analysis or "合作" in analysis:
-        emoji = "🤝"
-    else:
-        emoji = "💡"
-        
-    return (
-        f"*{emoji} {ticker} 投資快訊*\\n"
+    """ 使用 HTML 排版，打造專業金融快訊 UI """
+    
+    # 預設變數
+    sentiment_icon = "💡" 
+    summary = analysis
+    
+    # 解析 Gemini 吐出來的情緒標籤
+    lines = analysis.split('\\n')
+    for line in lines:
+        if line.startswith('[情緒]'):
+            sentiment_part = line.replace('[情緒]', '').strip()
+            # 抓取第一顆表情符號當大標題的 Icon
+            if '🟢' in sentiment_part:
+                sentiment_icon = "🟢"
+            elif '🔴' in sentiment_part:
+                sentiment_icon = "🔴"
+            elif '⚪' in sentiment_part:
+                sentiment_icon = "⚪"
+        elif line.startswith('[總結]'):
+            summary = line.replace('[總結]', '').strip()
+
+    # 如果 Gemini 沒有完全遵守格式，就回退使用整段文字
+    if summary == analysis:
+        summary = analysis.replace('[情緒]', '').replace('[總結]', '').strip()
+
+    # 專業 HTML 排版 (不再有討厭的下劃線跟反斜線)
+    msg = (
+        f"<b>{sentiment_icon} {ticker} 投資快訊</b>\\n"
         f"━━━━━━━━━━━━━━━\\n"
-        f"{analysis}\\n"
+        f"<i>{summary}</i>\\n"
         f"━━━━━━━━━━━━━━━\\n"
-        f"🔗 [點擊閱讀]({url})"
+        f"🔗 <a href='{url}'>點擊閱讀完整原文</a>"
     )
+    return msg
 
 def start_watchdog():
     print(f"👀 新聞看門狗開始執行掃描...")
