@@ -108,14 +108,18 @@ def analyze_news_gemini(ticker, title, description):
         return "SKIP"
 
 def format_telegram_message(ticker, analysis, url):
-    """ 使用 HTML 排版，打造專業金融快訊 UI """
+    """ 使用 HTML 排版，修復 \n 變成文字的 Bug """
     
     # 預設變數
     sentiment_icon = "💡" 
     summary = analysis
     
-    # 解析 Gemini 吐出來的情緒標籤
-    lines = analysis.split('\\n')
+    # 1. 關鍵修復：把字面上的 '\\n' 轉換為真正的換行，並清理多餘的 Markdown 橫線
+    clean_analysis = analysis.replace('\\n', '\n')
+    clean_analysis = clean_analysis.replace('---', '').replace('___', '')
+    
+    # 2. 解析 Gemini 吐出來的情緒標籤
+    lines = clean_analysis.split('\n')
     for line in lines:
         if line.startswith('[情緒]'):
             sentiment_part = line.replace('[情緒]', '').strip()
@@ -131,14 +135,14 @@ def format_telegram_message(ticker, analysis, url):
 
     # 如果 Gemini 沒有完全遵守格式，就回退使用整段文字
     if summary == analysis:
-        summary = analysis.replace('[情緒]', '').replace('[總結]', '').strip()
+        summary = clean_analysis.replace('[情緒]', '').replace('[總結]', '').strip()
 
-    # 專業 HTML 排版 (不再有討厭的下劃線跟反斜線)
+    # 3. 專業 HTML 排版 (用真正的 \n 來換行)
     msg = (
-        f"<b>{sentiment_icon} {ticker} 投資快訊</b>\\n"
-        f"━━━━━━━━━━━━━━━\\n"
-        f"<i>{summary}</i>\\n"
-        f"━━━━━━━━━━━━━━━\\n"
+        f"<b>{sentiment_icon} {ticker} 投資快訊</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"<i>{summary}</i>\n"
+        f"━━━━━━━━━━━━━━━\n"
         f"🔗 <a href='{url}'>點擊閱讀完整原文</a>"
     )
     return msg
