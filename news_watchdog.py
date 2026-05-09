@@ -64,7 +64,7 @@ def get_latest_news(ticker, aliases):
         return []
 
 def analyze_news_gemini(ticker, title, description):
-    if not GEMINI_API_KEY：
+    if not GEMINI_API_KEY:
         print("⚠️ [系統] 未偵測到 GEMINI_API_KEY，跳過分析。")
         return "SKIP"
 
