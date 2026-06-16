@@ -20,7 +20,7 @@ NEWS_API_KEY = os.getenv('NEWS_API_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 GEMINI_MODEL = 'gemini-2.5-flash-lite'
 
-HISTORY_FILE = 'news_history.json'
+HISTORY_FILE = 'news_history.js
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -36,15 +36,14 @@ def get_latest_news(ticker, aliases):
     if not NEWS_API_KEY:
         return []
     
-    # 放寬條件：只要有提到公司名或 Ticker 就抓取（不做嚴格事件過濾）
     query_string = " OR ".join(aliases)
     
     url = "https://newsapi.org/v2/everything"
     params = {
         'q': query_string,
-        'sortBy': 'publishedAt',
+        'sortBy': 'relevancy',  # 【關鍵修改】改為關聯度排序，避開最新生成的農場廢文
         'language': 'en',
-        'pageSize': 3,  # 每個標的最多抓取最新 3 條，避免 API 或 Token 超載
+        'pageSize': 8,          # 【關鍵修改】放大樣本數至 8，確保能撈到真正的實質新聞
         'apiKey': NEWS_API_KEY
     }
     
@@ -76,6 +75,7 @@ def analyze_news_gemini(ticker, title, description):
         print("⚠️ 請先安裝: pip install google-genai")
         return "SKIP"
 
+    # 【關鍵修改】重新設計 Prompt，加入 IV 催化劑與中小型股的放寬條件
     prompt = f"""
     你是專注於 GARP 策略 (彼得·林區風格) 與期權賣方策略的金融分析師。
     請分析以下 {ticker} 的新聞：
@@ -83,11 +83,14 @@ def analyze_news_gemini(ticker, title, description):
     摘要：{description}
     
     任務：
-    1. 判斷此新聞是否包含「值得關注的商業發展」或「基本面變化」。
-    2. 如果「有」，請嚴格按照以下格式回覆（請勿加上任何 Markdown 符號或 Markdown 代碼塊）：
+    1. 判斷此新聞是否包含以下任一條件：
+       - 「基本面變化」或「商業護城河發展」。
+       - 「波動率 (IV) 催化劑」(例如：財報前瞻、分析師評級調整、產品發布、行業政策變化)。
+    2. 對於中小型成長股 ({ticker})，請放寬審查標準，任何可能影響短期期權定價或市場情緒的實質資訊都算作「有」。
+    3. 如果「有」，請嚴格按照以下格式回覆（請勿加上任何 Markdown 符號或 Markdown 代碼塊）：
        [情緒] (請填寫：🟢利好 / 🔴利空 / ⚪中性)
-       [總結] (用 1-2 句繁體中文精確總結，並點出對公司護城河或波動率的潛在影響)
-    3. 如果「完全無關」(例如純粹市場雜訊、廣告)，請直接輸出 "SKIP"。
+       [總結] (用 1-2 句繁體中文精確總結，並點出對護城河或短期波動率的潛在影響)
+    4. 如果「完全無關」(例如：純粹市場雜訊、農場文章、無具體內容的自動生成報告)，請直接輸出 "SKIP"。
     """
 
     try:
