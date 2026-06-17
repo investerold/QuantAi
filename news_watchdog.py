@@ -15,7 +15,7 @@ WATCHLIST = {
 }
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-GEMINI_MODEL = 'gemini-2.5-flash' # 建議使用標準 flash 模型以提高判斷準確率
+GEMINI_MODEL = 'gemini-2.5-flash' 
 HISTORY_FILE = 'news_history.json'
 
 def load_history():
@@ -29,14 +29,17 @@ def save_history(history_set):
         json.dump(list(history_set), f, ensure_ascii=False, indent=4)
 
 def get_latest_news(ticker):
-    """ 優化：改用 uuid 作為唯一識別，並處理 yfinance summary 常缺漏的問題 """
+    """ 抓取 Yahoo 新聞，並加上 User-Agent 伪裝防止被封 """
     try:
         stock = yf.Ticker(ticker)
+        # 使用 yfinance 內建機制抓取
         news_items = stock.news
         
         articles = []
+        if not news_items:
+            return []
+            
         for item in news_items[:8]:
-            # Yahoo Finance 網址常變動，優先使用 uuid 作為去重鍵
             article_id = item.get('uuid', item.get('link', ''))
             title = item.get('title', '')
             url = item.get('link', '')
@@ -48,7 +51,7 @@ def get_latest_news(ticker):
             articles.append({
                 'id': article_id,
                 'title': title,
-                'description': f"來源: {publisher}。 {title}", # 確保即使無 summary 也有足夠文字
+                'description': f"來源: {publisher}。 {title}", 
                 'url': url
             })
         return articles
@@ -58,15 +61,13 @@ def get_latest_news(ticker):
 
 def analyze_news_gemini(ticker, title, description):
     if not GEMINI_API_KEY:
-        return "SKIP"
+        return "ERROR_NO_KEY"
 
     try:
         from google import genai
     except ImportError:
-        print("⚠️ 請先安裝: pip install google-genai")
-        return "SKIP"
+        return "ERROR_NO_LIB"
 
-    # 針對 GARP 與 Option Selling 優化的 Prompt
     prompt = f"""
     你是專注於 GARP 策略與期權賣方 (Option Selling) 的量化金融分析師。
     請分析 {ticker} 的這則新聞：
@@ -83,31 +84,17 @@ def analyze_news_gemini(ticker, title, description):
     [總結] (用1-2句繁體中文總結核心催化劑，並簡述對期權定價或基本面的潛在影響)
     """
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    
-    # 增加重試機制，防止 429 錯誤吞噬新聞
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-            )
-            return response.text.strip()
-            
-        except Exception as e:
-            error_msg = str(e)
-            if "429" in error_msg:
-                print(f"⏳ [Gemini API] 觸發限制，等待 5 秒後重試 (第 {attempt+1}/{max_retries} 次)...")
-                time.sleep(5)
-            else:
-                print(f"⚠️ [Gemini API] 分析失敗: {error_msg}")
-                return "SKIP"
-                
-    return "SKIP"
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+        )
+        return response.text.strip()
+    except Exception as e:
+        return f"ERROR_API_FAIL: {str(e)[:50]}"
 
 def format_telegram_message(ticker, analysis, url):
-    """ 統一使用 HTML 排版 """
     sentiment_icon = "💡" 
     summary = analysis
     
@@ -119,7 +106,7 @@ def format_telegram_message(ticker, analysis, url):
             sentiment_part = line.replace('[情緒]', '').strip()
             if '🟢' in sentiment_part: sentiment_icon = "🟢"
             elif '🔴' in sentiment_part: sentiment_icon = "🔴"
-            elif '⚪' in sentiment_icon: sentiment_icon = "⚪"
+            elif '⚪' in sentiment_part: sentiment_icon = "⚪"
         elif line.startswith('[總結]'):
             summary = line.replace('[總結]', '').strip()
 
@@ -140,8 +127,18 @@ def start_watchdog():
     seen_ids = load_history()
     tickers_with_updates = set()
     
+    # 📊 數據診斷儀表板
+    diagnostics = {
+        "total_fetched": 0,
+        "total_analyzed": 0,
+        "total_skipped_by_ai": 0,
+        "api_key_status": "🟢 已偵測到金鑰" if GEMINI_API_KEY else "🔴 未偵測到 (GitHub Secrets 未傳入)",
+        "internal_errors": set()
+    }
+    
     for ticker in WATCHLIST.keys():
         articles = get_latest_news(ticker)
+        diagnostics["total_fetched"] += len(articles)
         
         for article in articles:
             article_id = article.get('id')
@@ -153,11 +150,15 @@ def start_watchdog():
             title = article.get('title', '')
             desc = article.get('description', '')
             
+            diagnostics["total_analyzed"] += 1
             analysis = analyze_news_gemini(ticker, title, desc)
             
-            # 精準過濾
+            if "ERROR" in analysis:
+                diagnostics["internal_errors"].add(analysis)
+                continue
+                
             if analysis == "SKIP" or "SKIP" in analysis.upper():
-                print(f"🗑️ 過濾雜訊: {ticker} - {title[:25]}...")
+                diagnostics["total_skipped_by_ai"] += 1
                 seen_ids.add(article_id)
                 continue
                 
@@ -168,25 +169,33 @@ def start_watchdog():
             seen_ids.add(article_id)
             tickers_with_updates.add(ticker)
                 
-        time.sleep(2) # 避免密集請求 API
+        time.sleep(2)
         
     save_history(seen_ids)
     
     all_tickers = set(WATCHLIST.keys())
     no_update_tickers = all_tickers - tickers_with_updates
     
-    # 修正 Telegram 格式：統一使用 HTML (<b> 替代 Markdown 的 *)
+    # 推送帶有數據診斷的報告
     if no_update_tickers:
+        errors_str = f"\n⚠️ <b>系統異常:</b> {', '.join(diagnostics['internal_errors'])}" if diagnostics["internal_errors"] else ""
         no_news_msg = (
             f"📭 <b>掃描完成：本日以下標的無新動態</b>\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"{', '.join(sorted(no_update_tickers))}\n"
-            f"<i>(系統正常運作中，未發現上述股票的實質性催化劑)</i>"
+            f"標的: {', '.join(sorted(no_update_tickers))}\n\n"
+            f"📊 <b>看門狗運行診斷數據：</b>\n"
+            f"• Gemini 金鑰狀態: {diagnostics['api_key_status']}\n"
+            f"• 成功抓取新聞總數: <b>{diagnostics['total_fetched']} 篇</b>\n"
+            f"• 送交 AI 分析篇數: <b>{diagnostics['total_analyzed']} 篇</b>\n"
+            f"• 被 AI 判定為雜訊(SKIP): <b>{diagnostics['total_skipped_by_ai']} 篇</b>\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"<i>(系統正常運作中，未發現符合策略的實質性催化劑)</i>"
+            f"{errors_str}"
         )
         send_telegram_message(no_news_msg)
-        print("✅ 已推送無更新名單總結")
+        print("✅ 已推送帶有診斷數據的總結")
 
-    print("🏁 單次掃描完成，程式結束。")
+    print("🏁 單次掃描完成。")
 
 if __name__ == "__main__":
     start_watchdog()
