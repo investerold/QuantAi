@@ -20,7 +20,8 @@ NEWS_API_KEY = os.getenv('NEWS_API_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 GEMINI_MODEL = 'gemini-2.5-flash-lite'
 
-HISTORY_FILE = 'news_history.js
+# 這裡修復了語法錯誤 (加上了 .json 與結尾單引號)
+HISTORY_FILE = 'news_history.json'
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -41,9 +42,9 @@ def get_latest_news(ticker, aliases):
     url = "https://newsapi.org/v2/everything"
     params = {
         'q': query_string,
-        'sortBy': 'relevancy',  # 【關鍵修改】改為關聯度排序，避開最新生成的農場廢文
+        'sortBy': 'relevancy',  # 使用關聯度排序，避開最新生成的農場廢文
         'language': 'en',
-        'pageSize': 8,          # 【關鍵修改】放大樣本數至 8，確保能撈到真正的實質新聞
+        'pageSize': 8,          # 放大樣本數至 8，確保能撈到真正的實質新聞
         'apiKey': NEWS_API_KEY
     }
     
@@ -62,8 +63,6 @@ def get_latest_news(ticker, aliases):
         print(f"❌ [網絡錯誤] 抓取 {ticker} 失敗: {e}")
         return []
 
-# 主程式 (news_watchdog.py) 中的這兩個函數替換掉：
-
 def analyze_news_gemini(ticker, title, description):
     if not GEMINI_API_KEY:
         print("⚠️ [系統] 未偵測到 GEMINI_API_KEY，跳過分析。")
@@ -75,7 +74,6 @@ def analyze_news_gemini(ticker, title, description):
         print("⚠️ 請先安裝: pip install google-genai")
         return "SKIP"
 
-    # 【關鍵修改】重新設計 Prompt，加入 IV 催化劑與中小型股的放寬條件
     prompt = f"""
     你是專注於 GARP 策略 (彼得·林區風格) 與期權賣方策略的金融分析師。
     請分析以下 {ticker} 的新聞：
@@ -192,9 +190,9 @@ def start_watchdog():
     
     if no_update_tickers:
         no_news_msg = (
-            f"📭 *掃描完成：本日以下標的無新動態*\\n"
-            f"━━━━━━━━━━━━━━━\\n"
-            f"{', '.join(sorted(no_update_tickers))}\\n"
+            f"📭 *掃描完成：本日以下標的無新動態*\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"{', '.join(sorted(no_update_tickers))}\n"
             f"*(系統正常運作中，未發現上述股票的相關新聞)*"
         )
         send_telegram_message(no_news_msg)
