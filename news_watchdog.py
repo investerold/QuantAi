@@ -1,26 +1,22 @@
 import time
 import json
-import requests
 import os
+import yfinance as yf
 from datetime import datetime
 from bot import send_telegram_message
 
 # ================= 設定區 =================
+# 已移除清倉的 NVDA 與 AMD
 WATCHLIST = {
     "HIMS": ['"Hims & Hers"', '"HIMS"'],
     "ZETA": ['"Zeta Global"', '"ZETA"'],
     "ODDITY": ['"Oddity Tech"', '"ODD"'],
-    "NVDA": ['"NVIDIA"', '"NVDA"'],
     "TSLA": ['"Tesla"', '"TSLA"'],
-    "AMD": ['"Advanced Micro Devices"', '"AMD"'],
     "OSCR": ['"Oscar Health"', '"OSCR"']
 }
 
-NEWS_API_KEY = os.getenv('NEWS_API_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 GEMINI_MODEL = 'gemini-2.5-flash-lite'
-
-# 這裡修復了語法錯誤 (加上了 .json 與結尾單引號)
 HISTORY_FILE = 'news_history.json'
 
 def load_history():
@@ -34,33 +30,29 @@ def save_history(history_set):
         json.dump(list(history_set), f, ensure_ascii=False, indent=4)
 
 def get_latest_news(ticker, aliases):
-    if not NEWS_API_KEY:
-        return []
-    
-    query_string = " OR ".join(aliases)
-    
-    url = "https://newsapi.org/v2/everything"
-    params = {
-        'q': query_string,
-        'sortBy': 'relevancy',  # 使用關聯度排序，避開最新生成的農場廢文
-        'language': 'en',
-        'pageSize': 8,          # 放大樣本數至 8，確保能撈到真正的實質新聞
-        'apiKey': NEWS_API_KEY
-    }
-    
+    """ 使用 yfinance 精準抓取 Ticker 綁定新聞，過濾非相關雜訊 """
     try:
-        response = requests.get(url, params=params, timeout=10)
-        data = response.json()
-        if response.status_code == 200:
-            return data.get('articles', [])
+        stock = yf.Ticker(ticker)
+        news_items = stock.news
         
-        if response.status_code == 429:
-            print("❌ [News API] 配額已耗盡，請檢查方案。")
-        else:
-            print(f"❌ [News API] 抓取 {ticker} 失敗: {data.get('message', '未知錯誤')}")
-        return []
-    except requests.exceptions.RequestException as e:
-        print(f"❌ [網絡錯誤] 抓取 {ticker} 失敗: {e}")
+        articles = []
+        for item in news_items[:8]:  # 抓取最新的 8 篇
+            title = item.get('title', '')
+            url = item.get('link', '')
+            publisher = item.get('publisher', '未知來源')
+            summary = item.get('summary', '') # 部分新聞可能沒有 summary
+            
+            desc = f"來源: {publisher}。 {summary}".strip()
+            
+            if title and url:
+                articles.append({
+                    'title': title,
+                    'description': desc,
+                    'url': url
+                })
+        return articles
+    except Exception as e:
+        print(f"❌ [yfinance] 抓取 {ticker} 失敗: {e}")
         return []
 
 def analyze_news_gemini(ticker, title, description):
@@ -83,12 +75,12 @@ def analyze_news_gemini(ticker, title, description):
     任務：
     1. 判斷此新聞是否包含以下任一條件：
        - 「基本面變化」或「商業護城河發展」。
-       - 「波動率 (IV) 催化劑」(例如：財報前瞻、分析師評級調整、產品發布、行業政策變化)。
-    2. 對於中小型成長股 ({ticker})，請放寬審查標準，任何可能影響短期期權定價或市場情緒的實質資訊都算作「有」。
+       - 「波動率 (IV) 催化劑」(例如：財報前瞻、分析師評級調整、管理層發言、產品發布)。
+    2. 對於中小型成長股 ({ticker})，請放寬審查標準，任何可能影響短期期權定價的實質資訊都算作「有」。
     3. 如果「有」，請嚴格按照以下格式回覆（請勿加上任何 Markdown 符號或 Markdown 代碼塊）：
        [情緒] (請填寫：🟢利好 / 🔴利空 / ⚪中性)
        [總結] (用 1-2 句繁體中文精確總結，並點出對護城河或短期波動率的潛在影響)
-    4. 如果「完全無關」(例如：純粹市場雜訊、農場文章、無具體內容的自動生成報告)，請直接輸出 "SKIP"。
+    4. 如果「完全無關」(例如：純粹市場雜訊、農場文章、無具體內容的分析師總結)，請直接輸出 "SKIP"。
     """
 
     try:
@@ -110,21 +102,16 @@ def analyze_news_gemini(ticker, title, description):
 
 def format_telegram_message(ticker, analysis, url):
     """ 使用 HTML 排版，修復 \n 變成文字的 Bug """
-    
-    # 預設變數
     sentiment_icon = "💡" 
     summary = analysis
     
-    # 1. 關鍵修復：把字面上的 '\\n' 轉換為真正的換行，並清理多餘的 Markdown 橫線
     clean_analysis = analysis.replace('\\n', '\n')
     clean_analysis = clean_analysis.replace('---', '').replace('___', '')
     
-    # 2. 解析 Gemini 吐出來的情緒標籤
     lines = clean_analysis.split('\n')
     for line in lines:
         if line.startswith('[情緒]'):
             sentiment_part = line.replace('[情緒]', '').strip()
-            # 抓取第一顆表情符號當大標題的 Icon
             if '🟢' in sentiment_part:
                 sentiment_icon = "🟢"
             elif '🔴' in sentiment_part:
@@ -134,11 +121,9 @@ def format_telegram_message(ticker, analysis, url):
         elif line.startswith('[總結]'):
             summary = line.replace('[總結]', '').strip()
 
-    # 如果 Gemini 沒有完全遵守格式，就回退使用整段文字
     if summary == analysis:
         summary = clean_analysis.replace('[情緒]', '').replace('[總結]', '').strip()
 
-    # 3. 專業 HTML 排版 (用真正的 \n 來換行)
     msg = (
         f"<b>{sentiment_icon} {ticker} 投資快訊</b>\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -151,8 +136,6 @@ def format_telegram_message(ticker, analysis, url):
 def start_watchdog():
     print(f"👀 新聞看門狗開始執行掃描...")
     seen_urls = load_history()
-    
-    # 用來記錄哪些標的「真的有推送新聞」，哪些「沒有更新」
     tickers_with_updates = set()
     
     for ticker, aliases in WATCHLIST.items():
@@ -184,7 +167,6 @@ def start_watchdog():
         
     save_history(seen_urls)
     
-    # ==== 掃描結束：總結「無新聞」名單（Heartbeat） ====
     all_tickers = set(WATCHLIST.keys())
     no_update_tickers = all_tickers - tickers_with_updates
     
@@ -193,7 +175,7 @@ def start_watchdog():
             f"📭 *掃描完成：本日以下標的無新動態*\n"
             f"━━━━━━━━━━━━━━━\n"
             f"{', '.join(sorted(no_update_tickers))}\n"
-            f"*(系統正常運作中，未發現上述股票的相關新聞)*"
+            f"*(系統正常運作中，未發現上述股票的實質性催化劑)*"
         )
         send_telegram_message(no_news_msg)
         print("✅ 已推送無更新名單總結")
